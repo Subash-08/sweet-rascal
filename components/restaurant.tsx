@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { BarChart3, BookOpen, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, ClipboardList, CreditCard, LayoutDashboard, LayoutGrid, Menu as MenuIcon, Plus, ReceiptText, Search, Settings2, ShieldCheck, UserRound, Users, X } from 'lucide-react';
-import { type Bill, type Database, type Guest, type OrderEvent, type Page, type Payment, type Role, type Visit, emptyVisit, initialData, occupiesTable, payable, roleNames, rolePages, roles, serviceDay, sumPayments } from '../lib/demo';
+import { BarChart3, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, ClipboardList, CreditCard, Ellipsis, FileText, Heart, History, LayoutDashboard, LayoutGrid, Plus, ReceiptText, Search, Settings2, ShieldCheck, UserRound, Users, Utensils, X } from 'lucide-react';
+import { type Bill, type Database, type Discount, type Guest, type Line, type OrderEvent, type Page, type Payment, type Role, type Visit, defaultStaffDiscountLimit, discountAmount, emptyVisit, initialData, isRetiredSampleGuest, isSampleGuest, occupiesTable, payable, roleNames, rolePages, roles, serviceDay, sumPayments, totals } from '../lib/demo';
 import { Brand, Dialog, Empty, Field, Form, SearchInput, Title } from './ui';
 import { Checkout, OrderEditor } from './billing';
 import { BillPreview } from './invoice';
 import { BillingDesk, Activity } from './desk';
-import { BillList, Dashboard, Reports, guestLabel, tableName } from './overview';
+import { BillList, Dashboard, guestLabel, tableName } from './overview';
+import { Reports } from './reports';
+import { ConnectionGuard, InstallApp } from './install-app';
+import { contactRequest, GoogleContactsAccess } from './google-contacts-settings';
 import { Customers, Dining, GuestEditor, Menu, Orders, Payments, Settings, StaffAccess } from './operations';
 
 const storageKey = 'sweet-rascal-prototype-v1';
@@ -16,9 +19,10 @@ const navigation = [
   { label: 'MANAGE', pages: ['Customers', 'Menu', 'Reports', 'Activity', 'Staff & access', 'Settings'] },
 ] as { label: string; pages: Page[] }[];
 const icons = {
-  Overview: LayoutDashboard, 'Dining tables': LayoutGrid, Orders: ClipboardList, 'Billing desk': ReceiptText, Activity: ClipboardList, Bills: ReceiptText, Payments: CreditCard,
-  Customers: Users, Menu: BookOpen, Reports: BarChart3, 'Staff & access': ShieldCheck, Settings: Settings2, 'My profile': UserRound,
+  Overview: LayoutDashboard, 'Dining tables': LayoutGrid, Orders: ClipboardList, 'Billing desk': ReceiptText, Activity: History, Bills: FileText, Payments: CreditCard,
+  Customers: Users, Menu: Utensils, Reports: BarChart3, 'Staff & access': ShieldCheck, Settings: Settings2, 'My profile': UserRound,
 };
+const quickPages = ['Dining tables', 'Orders', 'Billing desk', 'Bills'] as const;
 type Detail = { kind: 'order'; order: Visit } | { kind: 'bill' | 'guest'; id: string };
 const activeOrder = (order: Visit) => ['Draft', 'Open', 'Upcoming'].includes(order.status);
 const localTime = () => new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'Asia/Kolkata' }).format(new Date());
@@ -34,6 +38,7 @@ export default function Restaurant() {
   const [departure, setDeparture] = useState<Visit>();
   const [confirmation, setConfirmation] = useState<'void' | 'cancel' | 'leave'>();
   const [drawer, setDrawer] = useState(false);
+  const sidebar = useRef<HTMLElement>(null);
   const [message, setMessage] = useState('');
   const [ready, setReady] = useState(false);
   const [search, setSearch] = useState(false);
@@ -47,7 +52,35 @@ export default function Restaurant() {
   const editorChanged = useRef(false);
   const [actorId, setActorId] = useState('');
   const [startOptions, setStartOptions] = useState(false);
+  const moreButton = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => {
+    if (!drawer) return;
+    const desktop = matchMedia('(min-width: 931px)');
+    const closeOnDesktop = () => { if (desktop.matches) setDrawer(false); };
+    const lock = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    sidebar.current?.querySelector<HTMLElement>('.drawer-close')?.focus();
+    function keyboard(event: KeyboardEvent) {
+      if (document.querySelector('dialog[open]')) return;
+      if (event.key === 'Escape') setDrawer(false);
+      if (event.key === 'Tab') {
+        const buttons = sidebar.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        if (!buttons?.length) return;
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    }
+    document.addEventListener('keydown', keyboard);
+    desktop.addEventListener('change', closeOnDesktop);
+    return () => {
+      document.body.style.overflow = lock;
+      document.removeEventListener('keydown', keyboard);
+      desktop.removeEventListener('change', closeOnDesktop);
+      moreButton.current?.focus();
+    };
+  }, [drawer]);
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       try {
@@ -56,12 +89,14 @@ export default function Restaurant() {
           const snapshot = JSON.parse(saved) as { database: Database; role: string; profile: Partial<Record<Role, string>> };
           if (snapshot.database?.business) {
             const nextRole = snapshot.role === 'Owner' ? 'Owner' : 'Staff';
-            const normalizeOrder = (order: Visit): Visit => ({ ...order, assigned: order.assigned === 'Owner' ? 'Owner' : 'Staff' });
+            const normalizeOrder = (order: Visit): Visit => ({ ...order, assigned: order.assigned === 'Owner' ? 'Owner' : 'Staff',
+              guestId: isRetiredSampleGuest(order.guestId) ? '' : order.guestId });
             update({
               ...snapshot.database,
               orders: snapshot.database.orders.map(normalizeOrder),
               bills: snapshot.database.bills.map(bill => ({ ...bill, order: normalizeOrder(bill.order) })),
-              guests: snapshot.database.guests.map(guest => ({ ...guest, assigned: guest.assigned === 'Owner' ? 'Owner' : 'Staff' })),
+              guests: snapshot.database.guests.filter(guest => !isRetiredSampleGuest(guest.id)).map(guest => ({ ...guest, assigned: guest.assigned === 'Owner' ? 'Owner' : 'Staff',
+                sync: guest.syncConfirmedAt ? 'Synced' : guest.phone || guest.companions?.some(person => person.saveToGoogle) ? 'Sync pending' : 'No phone' })),
               staff: snapshot.database.staff.map(member => ({ ...member, role: member.role === 'Owner' ? 'Owner' : 'Staff' })),
             });
             setRole(nextRole); setSessionProfile(snapshot.profile ?? {});
@@ -171,7 +206,8 @@ export default function Restaurant() {
     for (const line of visit.items) {
       const oldLine = previous?.items.find(item => item.id === line.id);
       if (line.priceReason && (oldLine?.price !== line.price || oldLine?.priceReason !== line.priceReason)) {
-        events.push(event(!oldLine && line.id.startsWith('special-') ? 'Special dish added' : 'Price changed', line.name + ' · ₹' + (line.price / 100) + ' · ' + line.priceReason));
+        events.push(event(!oldLine && line.id.startsWith('special-') ? 'Special dish added' : 'Price changed',
+          line.name + ' · ' + (oldLine ? '₹' + (oldLine.price / 100).toFixed(2) + ' → ' : '') + '₹' + (line.price / 100).toFixed(2) + ' each · ' + line.priceReason));
       }
       if (oldLine && oldLine.quantity !== line.quantity) events.push(event('Quantity corrected', line.name + ' · ' + oldLine.quantity + ' → ' + line.quantity));
     }
@@ -238,10 +274,44 @@ export default function Restaurant() {
     setCheckout(saved);
     setDetail({ kind: 'order', order: saved });
   }
+  function changeDiscount(input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve = false) {
+    if (!checkout) return 'Open checkout first.';
+    if (approve && role !== 'Owner') return 'Only the owner can approve this discount.';
+    const { subtotal } = totals(checkout.items, database.business.taxRate);
+    let discount: Discount | undefined;
+    if (input) {
+      const reason = input.reason.trim();
+      const saving = discountAmount(input, subtotal);
+      if (!reason || !Number.isFinite(input.value) || input.value <= 0 || saving < 1 || saving > subtotal
+        || (input.kind === 'percent' && input.value > 100)) return 'Enter a reason and a discount greater than zero and no higher than the subtotal.';
+      if (approve && (!checkout.discount?.pending || checkout.discount.subtotal !== subtotal)) return 'Review the discount against the current dish prices and submit it again.';
+      const limit = database.business.staffDiscountLimit ?? defaultStaffDiscountLimit;
+      const needsApproval = saving * 100 > subtotal * limit;
+      discount = { ...input, reason, subtotal, pending: needsApproval && role !== 'Owner', approver: needsApproval && role === 'Owner' ? userName : undefined };
+      if (payable({ ...checkout, discount: { ...discount, pending: false } }, database.business.taxRate) < (checkout.advance?.amount ?? 0) + sumPayments(checkout.payments ?? [])) {
+        return 'Correct recorded payments or the advance before applying this discount.';
+      }
+    }
+    const saved = record({ ...checkout, discount }, discount ? (discount.pending ? 'Discount requested' : discount.approver ? 'Discount approved' : 'Discount applied') + ' · ₹' + (discountAmount(discount, subtotal) / 100).toFixed(2) + ' · ' + discount.reason : 'Discount removed');
+    setCheckout(saved);
+    setDetail({ kind: 'order', order: saved });
+  }
+  function changeCheckoutLine(line: Line) {
+    if (!checkout) return 'Open checkout first.';
+    const items = checkout.items.map(item => item.id === line.id ? line : item);
+    const next = { ...checkout, items };
+    if (payable(next, database.business.taxRate) < (checkout.advance?.amount ?? 0) + sumPayments(checkout.payments ?? [])) {
+      return 'The new total is below the amount already recorded. Correct the payment or advance first.';
+    }
+    const saved = record(next);
+    setCheckout(saved);
+    setDetail({ kind: 'order', order: saved });
+  }
   function completeBill(payments: Payment[]) {
     if (!checkout || issueLock.current) return 'The bill has already been processed.';
     const error = visitError(checkout, true);
     if (error) return error;
+    if (checkout.discount && (checkout.discount.pending || checkout.discount.subtotal !== totals(checkout.items, database.business.taxRate).subtotal)) return 'Resolve the discount before issuing the bill.';
     if (sumPayments(payments) + (checkout.advance?.amount ?? 0) !== payable(checkout, database.business.taxRate)) return 'Record the full balance before issuing the bill.';
     issueLock.current = true;
     const id = 'SR-' + (Math.max(0, ...database.bills.map(bill => Number(bill.id.slice(3)))) + 1);
@@ -263,12 +333,50 @@ export default function Restaurant() {
     const visit = database.orders.find(item => item.id === bill.order.id);
     if (visit) record(visit, action);
   }
+  const syncQueue = useRef(Promise.resolve());
+  const syncAttempts = useRef(new Map<string, number>());
+  function syncGuest(guest: Guest) {
+    if (isSampleGuest(guest.id)) { setMessage('Sample contacts stay in the demo. Add a new customer to test Google sync.'); return; }
+    const contacts = [...(guest.phone ? [{ id: guest.id, name: guest.name, phone: guest.phone, note: guest.contactNote ?? '' }] : []),
+      ...guest.companions.flatMap(person => person.saveToGoogle && person.id ? [{ id: person.id, name: person.name, phone: person.phone, note: '' }] : [])];
+    if (!contacts.length) return;
+    const attempt = (syncAttempts.current.get(guest.id) ?? 0) + 1;
+    syncAttempts.current.set(guest.id, attempt);
+    const current = () => syncAttempts.current.get(guest.id) === attempt;
+    const finish = (issue?: string) => {
+      if (!current()) return;
+      update(state => ({ ...state, guests: state.guests.map(item => item.id === guest.id ? { ...item,
+        sync: issue ? 'Sync pending' : 'Synced', syncConfirmedAt: issue ? undefined : new Date().toISOString(), syncIssue: issue,
+      } : item) }));
+      setMessage(issue ? 'Customer saved. ' + issue : 'Customer saved to Google Contacts.');
+    };
+    if (!database.business.contactSync) { finish('Automatic contact sync is off in Settings.'); return; }
+    if (new Set(contacts.map(contact => contact.phone)).size !== contacts.length ||
+      contacts.some(contact => database.guests.some(item => item.id !== guest.id && item.phone === contact.phone))) {
+      finish('This number is shared. Review the contact details before syncing.'); return;
+    }
+    syncQueue.current = syncQueue.current.catch(() => {}).then(async () => {
+      if (!current()) return;
+      try {
+        for (const contact of contacts) {
+          if (!current()) return;
+          const result = await contactRequest('sync', contact);
+          if (result.synced !== true) throw new Error('Google did not confirm the save. Retry contact sync.');
+        }
+        finish();
+      } catch (error) { finish(error instanceof Error ? error.message : 'Contact sync failed. Try again.'); }
+    });
+  }
   function saveGuest(guest: Guest) {
+    if (guest.companions.some(person => person.saveToGoogle)) guest = { ...guest, sync: 'Sync pending' };
     update(state => ({ ...state, guests: state.guests.some(item => item.id === guest.id) ? state.guests.map(item => item.id === guest.id ? guest : item) : [guest, ...state.guests] }));
     if (guestEditor?.inOrder && detail?.kind === 'order') setDetail({ kind: 'order', order: { ...detail.order, guestId: guest.id, guest: guest.name, guestPhone: guest.phone, guestDetails: 'Collected' } });
     else selectGuest(guest);
     setGuestEditor(undefined);
+    if (isSampleGuest(guest.id)) { setMessage('Sample customer saved. Add a new customer to test Google sync.'); return; }
     setMessage(guest.sync === 'Sync pending' ? 'Customer saved. Contact sync pending.' : 'Customer saved.');
+    if (guest.sync === 'Sync pending') syncGuest(guest);
+    else syncAttempts.current.set(guest.id, (syncAttempts.current.get(guest.id) ?? 0) + 1);
   }
   const order = detail?.kind === 'order' ? detail.order : undefined;
   const bill = detail?.kind === 'bill' ? data.bills.find(item => item.id === detail.id) : undefined;
@@ -282,7 +390,6 @@ export default function Restaurant() {
   const searchOrders = searchTerm ? data.orders.filter(item => activeOrder(item) && (item.id + ' ' + guestLabel(item)).toLowerCase().includes(searchTerm)).slice(0, 4) : [];
   const searchBills = searchTerm ? data.bills.filter(item => (item.id + ' ' + guestLabel(item.order)).toLowerCase().includes(searchTerm)).slice(0, 4) : [];
   const searchGuests = searchTerm ? data.guests.filter(item => (item.name + ' ' + item.phone).toLowerCase().includes(searchTerm)).slice(0, 4) : [];
-  const phoneMatch = (candidate: Guest) => database.guests.some(item => item.id !== candidate.id && item.phone === candidate.phone);
 
   let body;
   if (order && (page === 'Orders' || page === 'Billing desk')) body = <>
@@ -302,16 +409,11 @@ export default function Restaurant() {
     case 'Activity': body = <Activity data={data} />; break;
     case 'Bills': body = <><Title title="Bills" subtitle={'Find, reprint and share issued restaurant bills.'} /><BillList bills={data.bills} view={viewBill} /></>; break;
     case 'Payments': body = <Payments data={data} view={viewBill} />; break;
-    case 'Customers': body = <Customers data={data} role={role} selected={guest} select={selectGuest} edit={value => setGuestEditor({ guest: value })} add={() => setGuestEditor({})} viewBill={viewBill} retry={value => {
-      if (!database.business.contactSync) { setMessage('Contact sync is disabled in Settings.'); return; }
-      if (phoneMatch(value)) { setMessage('This number is shared. Review the customer details before syncing.'); return; }
-      update(state => ({ ...state, guests: state.guests.map(item => item.id === value.id ? { ...item, sync: 'Synced' } : item) }));
-      setMessage('Contact synced in the demo.');
-    }} />; break;
+    case 'Customers': body = <><Customers data={data} role={role} selected={guest} select={selectGuest} edit={value => setGuestEditor({ guest: value })} add={() => setGuestEditor({})} viewBill={viewBill} retry={syncGuest} />{!guest && <GoogleContactsAccess ownerView={role === 'Owner'} />}</>; break;
     case 'Menu': body = <Menu data={data} update={update} notify={setMessage} />; break;
-    case 'Reports': body = <Reports data={data} />; break;
+    case 'Reports': body = <Reports data={data} viewBill={viewBill} openOrder={order => openOrder(order, true)} />; break;
     case 'Staff & access': body = <StaffAccess data={data} update={update} notify={setMessage} />; break;
-    case 'Settings': body = <Settings business={data.business} update={update} notify={setMessage} />; break;
+    case 'Settings': body = <><Settings business={data.business} update={update} notify={setMessage} /><GoogleContactsAccess ownerView /></>; break;
     case 'My profile': body = <><Title title="My profile" subtitle="Manage your display name and see your current role." /><form className="panel settings-panel" key={role} onSubmit={event => {
       event.preventDefault();
       const name = String(new FormData(event.currentTarget).get('name') ?? '').trim();
@@ -321,28 +423,31 @@ export default function Restaurant() {
   }
 
   return <div className="workspace">
-    {drawer && <button className="drawer-scrim" aria-label="Close navigation" onClick={() => setDrawer(false)} />}
-    <aside className={'sidebar ' + (drawer ? 'drawer-open' : '')}>
-      <button className="brand-button" onClick={() => protectNavigation(() => go('Overview'))} aria-label="Sweet Rascal overview"><Brand /></button>
+    {!drawer && <a className="skip-link" href="#main" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>}
+    {drawer && <button className="drawer-scrim" tabIndex={-1} aria-label="Close navigation overlay" onClick={() => setDrawer(false)} />}
+    <aside id="workspace-sidebar" ref={sidebar} className={'sidebar ' + (drawer ? 'drawer-open' : '')} role={drawer ? 'dialog' : undefined} aria-modal={drawer || undefined} aria-labelledby={drawer ? 'workspace-more-title' : undefined}>
+      {drawer && <button className="icon-button drawer-close" aria-label="Close navigation" onClick={() => setDrawer(false)}><X size={20} /></button>}
+      {drawer ? <div className="more-sheet-head"><span aria-hidden="true" /><h2 id="workspace-more-title">More</h2><p>Sweet Rascal · {role} workspace</p></div> :
+        <button className="brand-button" onClick={() => protectNavigation(() => go('Overview'))} aria-label="Sweet Rascal overview"><Brand /></button>}
       <nav aria-label="Main navigation">{navigation.map(group => <div className="nav-group" key={group.label}>
-        <p>{group.label}</p>{group.pages.filter(item => allowed.includes(item)).map(item => { const Icon = icons[item]; return <button key={item} className={page === item ? 'nav-active' : ''} aria-current={page === item ? 'page' : undefined} onClick={() => protectNavigation(() => go(item))}><Icon size={18} />{item === 'Menu' ? 'Food & pricing' : item}</button>; })}
+        <p>{group.label}</p>{group.pages.filter(item => allowed.includes(item) && (!drawer || !quickPages.some(quick => quick === item))).map(item => { const Icon = icons[item]; return <button key={item} className={page === item ? 'nav-active' : ''} aria-current={page === item ? 'page' : undefined} onClick={() => protectNavigation(() => go(item))}><Icon size={18} />{item === 'Menu' ? 'Food & pricing' : item}</button>; })}
       </div>)}</nav>
-      <div className="sidebar-bottom"><button className="help-link" onClick={() => { setDrawer(false); setHelp(true); }}><CircleHelp size={17} /> Help</button>
+      <div className="sidebar-bottom"><InstallApp /><button className="help-link" onClick={() => { setDrawer(false); setHelp(true); }}><CircleHelp size={17} /> Help</button>
         <button className="sidebar-profile" onClick={() => protectNavigation(() => go('My profile'))}><span className="avatar">{initials}</span><span><strong>{userName}</strong><small>{role}</small></span><ChevronRight size={16} /></button></div>
     </aside>
-    <div className="workspace-body">
-      <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" onClick={() => setDrawer(!drawer)} aria-label="Open navigation" aria-expanded={drawer}><MenuIcon size={21} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{page === 'Menu' ? 'Food & pricing' : page}</strong></div>
+    <div className="workspace-body" inert={drawer}>
+      <header className="topbar"><div className="breadcrumb"><button className="mobile-brand" aria-label="Sweet Rascal overview" onClick={() => protectNavigation(() => go('Overview'))}><Heart size={17} aria-hidden="true" /></button><span>Workspace</span><ChevronRight size={13} /><strong>{page === 'Menu' ? 'Food & pricing' : page}</strong></div>
         <div className="top-actions">{actors.length > 1 && <select className="actor-select" aria-label="Staff member" value={currentActor?.id} onChange={e => setActorId(e.target.value)}>{actors.map(staff => <option value={staff.id} key={staff.id}>{staff.name}</option>)}</select>}<button className="icon-button top-search" onClick={() => { setSearch(true); setQuery(''); }} aria-label="Search workspace"><Search size={19} /></button><label className="role-switch"><ShieldCheck size={16} /><span>Preview as</span><select value={role} aria-label="Preview as role" onChange={event => { const next = event.target.value as Role; protectNavigation(() => switchRole(next)); }}>{roles.map(item => <option key={item}>{item}</option>)}</select><ChevronDown size={14} aria-hidden="true" /></label></div>
       </header>
-      <main className="main-content" id="main">{allowed.includes(page) ? body : <Empty title="This page is restricted" />}</main>
+      <main className="main-content" id="main" tabIndex={-1}>{allowed.includes(page) ? body : <Empty title="This page is restricted" />}</main>
       <nav className="mobile-nav" aria-label="Quick navigation">
-        {(['Overview', 'Dining tables', 'Orders', 'Billing desk'] as const).map(item => { const Icon = icons[item]; return <button key={item} aria-current={page === item ? 'page' : undefined} onClick={() => protectNavigation(() => go(item))}><Icon size={20} />{item === 'Dining tables' ? 'Tables' : item === 'Billing desk' ? 'Billing' : item}</button>; })}
-        <button onClick={() => setDrawer(!drawer)} aria-expanded={drawer}><MenuIcon size={20} /> More</button>
+        {quickPages.map(item => { const Icon = icons[item]; return <button key={item} aria-current={page === item ? 'page' : undefined} onClick={() => protectNavigation(() => go(item))}><Icon size={20} aria-hidden="true" />{item === 'Dining tables' ? 'Tables' : item === 'Billing desk' ? 'Billing' : item}</button>; })}
+        <button ref={moreButton} onClick={() => setDrawer(!drawer)} aria-haspopup="dialog" aria-expanded={drawer} aria-controls="workspace-sidebar"><Ellipsis size={20} aria-hidden="true" /> More</button>
       </nav>
     </div>
     {message && <div className="toast" role="status"><CheckCircle2 size={20} /><span>{message}</span><button aria-label="Dismiss notification" className="icon-button" onClick={() => setMessage('')}><X size={16} /></button></div>}
     {guestEditor && <GuestEditor guest={guestEditor.guest} guests={database.guests} role={role} sync={database.business.contactSync} save={saveGuest} close={() => setGuestEditor(undefined)} />}
-    {checkout && <Checkout order={checkout} taxRate={database.business.taxRate} close={() => setCheckout(undefined)} complete={completeBill} onPaymentsChange={changePayments} onTipChange={changeTip} />}
+    {checkout && <Checkout order={checkout} taxRate={database.business.taxRate} role={role} staffDiscountLimit={database.business.staffDiscountLimit ?? defaultStaffDiscountLimit} close={() => setCheckout(undefined)} complete={completeBill} onPaymentsChange={changePayments} onTipChange={changeTip} onDiscountChange={changeDiscount} onLineChange={changeCheckoutLine} />}
     {departure && <Dialog title={departure.kind === 'Parcel' ? 'Mark parcel collected?' : 'Confirm guests have left'} close={() => setDeparture(undefined)}>
       <p>{departure.kind === 'Parcel' ? 'Confirm when the customer has collected their order.' : 'This makes the table available for the next guests.'}</p>
       <div className="dialog-actions"><button className="btn secondary" onClick={() => setDeparture(undefined)}>Cancel</button><button className="btn primary" onClick={() => { closeVisit(departure); setDeparture(undefined); }}>{departure.kind === 'Parcel' ? 'Mark collected' : 'Free table'}</button></div>
@@ -381,6 +486,7 @@ export default function Restaurant() {
       <button className="btn secondary" onClick={() => startOrder('', 'Dine-in', true)}><Plus size={18} /> Phone pre-order · assign later</button>
     </div></Dialog>}
     {help && <Dialog title="Using the demo" close={() => setHelp(false)}><div className="help-body"><p>Switch roles with <b>Preview as</b>. Each role has its own access to pages and records.</p><p>Start a walk-in or phone pre-order from <b>New order</b>. Use <b>Checkout</b> to record payments and preview an A4 bill.</p><p>Changes are saved in this browser.</p><button className="btn primary" onClick={() => { setHelp(false); startOrder(); }}><Plus size={16} /> New order</button></div></Dialog>}
+    <ConnectionGuard />
   </div>;
 }
 

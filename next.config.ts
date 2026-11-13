@@ -1,4 +1,4 @@
 import type { NextConfig } from 'next';
 
-const config: NextConfig = { output: 'export', devIndicators: false };
+const config: NextConfig = { devIndicators: false };
 export default config;

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Banknote, CalendarDays, ChartNoAxesCombined, CreditCard, HandCoins, IndianRupee, Package, ReceiptText, Smartphone, TriangleAlert, Utensils } from 'lucide-react';
-import { type Bill, type Database, type Payment, type Visit, payable, rupees, serviceDay, shortDate, sumPayments, totals } from '../lib/demo';
+import { type Bill, type Database, type Payment, type Visit, payable, rupees, serviceDay, shortDate, sumPayments, timeZone, totals } from '../lib/demo';
 import { BillList, guestLabel, tableName } from './overview';
 import { Badge, DataTable, Empty, Field } from './ui';
 import '../app/reports.css';
@@ -11,7 +11,8 @@ const dayMs = 86_400_000;
 const dayTime = (day: string) => Date.parse(day + 'T00:00:00Z');
 const shift = (day: string, count: number) => new Date(dayTime(day) + count * dayMs).toISOString().slice(0, 10);
 const period = (from: string, to: string) => from === to ? shortDate(from) : shortDate(from) + ' – ' + shortDate(to);
-const sale = (bill: Bill) => totals(bill.order.items, bill.taxRate);
+const sale = (bill: Bill) => totals(bill.order.items, bill.taxRate, bill.order.discount);
+const localDate = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
 const paymentMethods = [
   { name: 'Cash', icon: Banknote, color: '#922a27' },
   { name: 'UPI', icon: Smartphone, color: '#d0583f' },
@@ -92,9 +93,11 @@ export function Reports({ data, viewBill, openOrder }: { data: Database; viewBil
   const advances = [...paidBills.map(bill => bill.order), ...open].flatMap(order => order.advance && inRange(order.advance.date) ? [order.advance] : []);
   const payments = [...paidBills.flatMap(bill => bill.payments), ...open.flatMap(order => order.payments ?? [])].filter(payment => inRange(payment.date)).concat(advances);
   const outstanding = open.flatMap(order => {
+    if (!order.guestLeftAt || !inRange(localDate.format(new Date(order.guestLeftAt)))) return [];
     const due = payable(order, data.business.taxRate) - (order.advance?.amount ?? 0) - sumPayments(order.payments ?? []);
-    return order.guestLeftAt && due > 0 && inRange(order.guestLeftAt.slice(0, 10) ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', dateStyle: 'short' }).format(new Date(order.guestLeftAt)) : order.date) ? [{ ...order, due }] : [];
+    return due > 0 ? [{ ...order, due }] : [];
   });
+  const orders = data.orders.filter(order => order.status !== 'Cancelled' && inRange(order.date));
   const dishes = new Map<string, { id: string; name: string; quantity: number; revenue: number }>();
   for (const bill of bills) for (const line of bill.order.items) {
     const key = line.name.trim().toLowerCase();
@@ -132,10 +135,10 @@ export function Reports({ data, viewBill, openOrder }: { data: Database; viewBil
         {index === 0 && change !== null && <p className="report-change" data-fell={change < 0}>{change < 0 ? <ArrowDownRight size={14} /> : <ArrowUpRight size={14} />}{Math.abs(change)}% vs previous {span === 1 ? 'day' : span + ' days'}</p>}
         <small>{hint}</small>
       </section>)}</div>
-      <div className="report-grid report-primary"><SalesTrend from={from} to={to} bills={bills} /><CollectionMix payments={payments} /></div>
+      <div className="report-grid report-primary"><SalesTrend key={from + ':' + to} from={from} to={to} bills={bills} /><CollectionMix payments={payments} /></div>
       <div className="report-grid">
         <section className="panel report-card">
-          <div className="report-card-head"><div><h2>Top dishes</h2><p>From paid bills · before tax</p></div><select aria-label="Rank dishes by" value={rankBy} onChange={event => setRankBy(event.target.value as typeof rankBy)}><option value="quantity">By quantity</option><option value="revenue">By sales</option></select></div>
+          <div className="report-card-head"><div><h2>Top dishes</h2><p>From paid bills · before tax and bill discounts</p></div><select aria-label="Rank dishes by" value={rankBy} onChange={event => setRankBy(event.target.value as typeof rankBy)}><option value="quantity">By quantity</option><option value="revenue">By sales</option></select></div>
           {ranked.length ? <ol className="report-ranking">{ranked.slice(0, 7).map((item, index) => <li key={item.id}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{item.name}</b><small>{item.quantity} sold</small></div><strong>{rupees(item.revenue)}</strong></li>)}</ol> : <Empty title="No dishes sold in this period" />}
         </section>
         <section className="panel report-card">
@@ -153,7 +156,7 @@ export function Reports({ data, viewBill, openOrder }: { data: Database; viewBil
         <div className="report-card-head"><div><h2>Day-end review</h2><p>Totals for the selected range</p></div><TriangleAlert size={21} aria-hidden="true" /></div>
         <dl className="report-closeout">{[
           ['GST on issued bills', rupees(tax)], ['Tips on issued bills', rupees(tips)], ['Advances collected', rupees(sumPayments(advances))],
-          ['Guests left with a balance', rupees(outstanding.reduce((sum, order) => sum + order.due, 0))], ['Voided bills', voids.length],
+          ['Unpaid departures', rupees(outstanding.reduce((sum, order) => sum + order.due, 0))], ['Voided bills', voids.length], ['Orders by visit date', orders.length],
         ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       </section>
       <section className="report-ledger">

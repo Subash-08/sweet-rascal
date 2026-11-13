@@ -1,10 +1,10 @@
 'use client';
 
 import { cloneElement, isValidElement, useId, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowDownUp, ChevronLeft, ChevronRight, Search, X, Inbox } from 'lucide-react';
+import { ArrowDownUp, ChevronLeft, ChevronRight, Heart, Search, X, Inbox } from 'lucide-react';
 
 export function Brand() {
-  return <span className="brand"><span className="brand-mark" aria-hidden="true">♡</span><span><strong>Sweet Rascal</strong><small>YERCAUD · RESTAURANT</small></span></span>;
+  return <span className="brand"><span className="brand-mark"><Heart size={21} aria-hidden="true" /></span><span><strong>Sweet Rascal</strong><small>YERCAUD · RESTAURANT</small></span></span>;
 }
 
 export function Badge({ children, tone }: { children: ReactNode; tone?: 'green' | 'amber' | 'blue' | 'gray' | 'red' }) {

@@ -125,6 +125,10 @@
 .ow-checkout-review summary span { color: var(--muted); font-weight: 500; white-space: nowrap; }
 .ow-checkout-review ul { list-style: none; margin: 0; padding: 0; max-height: 190px; overflow: auto; }
 .ow-checkout-review li { padding: 5px 0; overflow-wrap: anywhere; }
+.checkout-unit { display: block; }
+.checkout-line-actions { display: grid; justify-items: end; flex: none; }
+.checkout-line-actions .text-button { min-height: 44px; }
+.checkout-discount { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .ow-checkout-payment .payment-row span { overflow-wrap: anywhere; }
 .ow-payment-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ow-payment-actions .primary { flex-grow: 1; }
@@ -167,8 +171,10 @@
 @container order-workspace (max-width: 390px) {
   .ow-fields { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 580px) {
+@media (max-width: 930px) {
   .ow-mobile-bar { bottom: calc(60px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 580px) {
   .ow-context { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 12px; }
   .ow-context select { font-size: .9rem; }
 }

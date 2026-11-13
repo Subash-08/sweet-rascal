@@ -413,8 +413,12 @@
   }
 }
 
+.sr-invoice-print-ref {
+  display: none;
+}
+
 @page sr-invoice-a4 {
-  size: A4;
+  size: A4 portrait;
   margin: 10mm 11mm;
 }
 
@@ -433,16 +437,32 @@
     box-shadow: none;
     font-size: 9.5pt;
   }
+  .sr-invoice-preview {
+    width: auto;
+    max-width: none;
+    margin: 0;
+  }
+  .sr-invoice-stamp,
+  .sr-invoice-greeting {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
   .sr-invoice-mark strong {
     font-size: 22pt;
   }
   .sr-invoice-items thead {
     display: table-header-group;
   }
+  .sr-invoice-print-ref {
+    display: table-row;
+  }
+  .sr-invoice-print-ref th {
+    text-align: left;
+  }
   .sr-invoice-head,
   .sr-invoice-visit,
   .sr-invoice-items tr,
-  .sr-invoice-settlement,
+  .sr-invoice-totals,
   .sr-invoice-footer {
     break-inside: avoid;
   }

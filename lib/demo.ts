@@ -16,7 +16,7 @@ export const serviceDay = () => new Intl.DateTimeFormat('en-CA', { timeZone, yea
 export type Payment = { amount: number; method: Method; date: string };
 export type Dish = { id: string; name: string; category: string; price: number; available: boolean; kind: 'Non-veg' | 'Egg' | 'Veg'; description: string };
 export type Line = { id: string; name: string; price: number; quantity: number; note?: string; priceReason?: string; servedQuantity?: number };
-export type Guest = { id: string; name: string; phone: string; notes: string; contactNote?: string; companions: {name: string; phone: string}[]; sync: 'Synced' | 'Sync pending' | 'No phone'; assigned: Role };
+export type Guest = { id: string; name: string; phone: string; notes: string; contactNote?: string; companions: {id?: string; name: string; phone: string; saveToGoogle?: boolean}[]; sync: 'Synced' | 'Sync pending' | 'No phone'; syncConfirmedAt?: string; syncIssue?: string; assigned: Role };
 export type Table = { id: string; name: string; seats: number; area: string };
 export type OrderEvent = { id: string; at: string; actor: string; action: string; detail?: string };
 export type Visit = {
@@ -24,10 +24,12 @@ export type Visit = {
   kind?: 'Dine-in' | 'Parcel'; guestPhone?: string; hometown?: string; stay?: string; nativity?: string;
   extraCovers?: number; guestType?: string; relationship?: string; rating?: string; blacklist?: boolean; pickupTime?: string;
   payments?: Payment[]; servedAt?: string; guestLeftAt?: string; takenAt?: string; updatedAt?: string;
-  events?: OrderEvent[]; readyForBilling?: boolean; staffId?: string; guestDetails?: 'Pending' | 'Collected' | 'Skipped';
-   id: string; source: 'Walk-in' | 'Phone pre-order'; guestId: string; guest: string; table: string; covers: number; session: string; date: string; time: string; host: string; referral: string; pet: string; breed: string; seatedAt: string; notes: string; assigned: Role; items: Line[]; advance?: Payment; status: 'Draft' | 'Open' | 'Upcoming' | 'Billed' | 'Cancelled' };
+  discount?: Discount; events?: OrderEvent[]; readyForBilling?: boolean; staffId?: string; guestDetails?: 'Pending' | 'Collected' | 'Skipped';
+   id: string; source: 'Walk-in' | 'Phone pre-order' | 'Online'; guestId: string; guest: string; table: string; covers: number; session: string; date: string; time: string; host: string; referral: string; pet: string; breed: string; seatedAt: string; notes: string; assigned: Role; items: Line[]; advance?: Payment; status: 'Draft' | 'Open' | 'Upcoming' | 'Billed' | 'Cancelled' };
 export type Bill = { id: string; date: string; time: string; order: Visit; payments: Payment[]; voided?: boolean; business: Business; taxRate: number; tableName?: string };
-export type Business = { name: string; address: string; phone: string; gstin: string; footer: string; taxRate: number; contactSync: boolean };
+export type Business = { name: string; address: string; phone: string; gstin: string; footer: string; taxRate: number; contactSync: boolean; staffDiscountLimit?: number };
+export type Discount = { kind: 'percent' | 'amount'; value: number; reason: string; subtotal: number; approver?: string; pending: boolean };
+export const defaultStaffDiscountLimit = 10;
 export type Staff = { id: string; name: string; role: Role; active: boolean };
 export type Database = { guests: Guest[]; dishes: Dish[]; categories: string[]; tables: Table[]; orders: Visit[]; bills: Bill[]; business: Business; staff: Staff[] };
 export const occupiesTable = (visit: Visit) => Boolean(visit.table) && visit.kind !== 'Parcel' && !visit.guestLeftAt &&
@@ -37,13 +39,18 @@ export const rupees = (paise: number, decimals = false) => new Intl.NumberFormat
 }).format(paise / 100);
 export const shortDate = (day: string) => new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', timeZone }).format(new Date(day + 'T12:00:00+05:30'));
 export const sumPayments = (payments: Payment[]) => payments.reduce((sum, payment) => sum + payment.amount, 0);
-export function totals(items: Line[], taxRate: number) {
+export function discountAmount(discount: Pick<Discount, 'kind' | 'value'>, subtotal: number) {
+  return discount.kind === 'percent' ? Math.round(subtotal * discount.value / 100) : discount.value;
+}
+export function totals(items: Line[], taxRate: number, discount?: Discount) {
   const subtotal = items.reduce((sum, line) => sum + line.quantity * line.price, 0);
-  const tax = Math.round(subtotal * taxRate / 100);
-  return { subtotal, tax, total: subtotal + tax * 2 };
+  const saving = discount && !discount.pending && discount.subtotal === subtotal ? discountAmount(discount, subtotal) : 0;
+  const net = subtotal - saving;
+  const tax = Math.round(net * taxRate / 100);
+  return { subtotal, saving, net, tax, total: net + tax * 2 };
 }
 export function payable(order: Visit, taxRate: number) {
-  return totals(order.items, taxRate).total + (order.tip ?? 0);
+  return totals(order.items, taxRate, order.discount).total + (order.tip ?? 0);
 }
 export function parseMoney(value: string) {
   if (!/^\d{1,7}(\.\d{1,2})?$/.test(value.trim())) return NaN;
@@ -71,12 +78,13 @@ const dishes: Dish[] = [
   { id: 'lime', name: 'Fresh lime soda', category: 'Drinks', price: 9500, available: true, kind: 'Veg', description: 'Sweet, salted or mixed' },
 ];
 const guests: Guest[] = [
-  { id: 'g1', name: 'Ananya Raman', phone: '9000000101', notes: 'Prefers a shaded table.', companions: [{ name: 'Kiran Raman', phone: '9000000102' }], sync: 'Synced', assigned: 'Staff' },
-  { id: 'g2', name: 'Rohan Menon', phone: '9000000103', notes: 'Likes the home-style chicken curry.', companions: [], sync: 'Synced', assigned: 'Staff' },
+  { id: 'g1', name: 'Ananya Raman', phone: '9000000101', notes: 'Prefers a shaded table.', companions: [{ name: 'Kiran Raman', phone: '9000000102' }], sync: 'Sync pending', assigned: 'Staff' },
+  { id: 'g2', name: 'Rohan Menon', phone: '9000000103', notes: 'Likes the home-style chicken curry.', companions: [], sync: 'Sync pending', assigned: 'Staff' },
   { id: 'g3', name: 'Neha Shah', phone: '9000000104', notes: '', companions: [], sync: 'Sync pending', assigned: 'Staff' },
-  { id: 'g4', name: 'Dev Iyer', phone: '9000000105', notes: '', companions: [], sync: 'Synced', assigned: 'Owner' },
-  { id: 'g5', name: 'Priya Nair', phone: '9000000106', notes: '', companions: [], sync: 'Synced', assigned: 'Staff' },
 ];
+const retiredSampleGuests = new Set(['g4', 'g5']);
+export const isRetiredSampleGuest = (id: string) => retiredSampleGuests.has(id);
+export const isSampleGuest = (id: string) => /^g\d+$/.test(id);
 const tables: Table[] = [
   { id: 't1', name: 'Xanadu', seats: 4, area: 'Garden' }, { id: 't2', name: 'Bonsai', seats: 2, area: 'Garden' },
   { id: 't3', name: 'Fern', seats: 4, area: 'Garden' }, { id: 't4', name: 'Canopy', seats: 6, area: 'Garden' },
@@ -91,7 +99,7 @@ const openOrders: Visit[] = [
   { ...emptyVisit('Staff', 't1'), id: 'OR-021', guestId: 'g1', guest: 'Ananya Raman', time: '12:30', covers: 4, items: [line(0, 2), line(6, 2), line(7, 2)] },
   { ...emptyVisit('Staff', 't5'), id: 'OR-022', guestId: 'g2', guest: 'Rohan Menon', time: '13:15', covers: 5, items: [line(2, 3), line(5, 4), line(9, 2)], readyForBilling: true },
   { ...emptyVisit('Staff'), id: 'OR-023', guestId: 'g3', guest: 'Neha Shah', source: 'Phone pre-order', status: 'Upcoming', session: 'Dinner', time: '18:30', covers: 3, items: [line(1, 2), line(3, 1), line(6, 3)], advance: { amount: 50000, method: 'UPI', date: demoDay } },
-  { ...emptyVisit('Staff', 't8'), id: 'OR-024', guestId: 'g4', guest: 'Dev Iyer', source: 'Phone pre-order', status: 'Upcoming', session: 'Dinner', time: '19:45', covers: 4, items: [line(0, 2), line(2, 2)] },
+  { ...emptyVisit('Staff', 't8'), id: 'OR-024', guest: 'Dev Iyer', source: 'Phone pre-order', status: 'Upcoming', session: 'Dinner', time: '19:45', covers: 4, items: [line(0, 2), line(2, 2)] },
 ];
 const bills: Bill[] = Array.from({ length: 26 }, (_, index) => {
   const day = index < 8 ? 13 : 12 - Math.floor((index - 8) / 3);

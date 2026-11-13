@@ -62,7 +62,7 @@ function InvoiceSheet({ bill, table, mono }: { bill: Bill; table: string; mono: 
   const { business, order } = bill;
   const parcel = order.kind === 'Parcel';
   const tableName = bill.tableName ?? table;
-  const { subtotal, tax, total } = totals(order.items, bill.taxRate);
+  const { subtotal, saving, tax, total } = totals(order.items, bill.taxRate, order.discount);
   const advance = order.advance?.amount ?? 0;
   const tip = order.tip ?? 0;
   const payable = total + tip;
@@ -71,6 +71,7 @@ function InvoiceSheet({ bill, table, mono }: { bill: Bill; table: string; mono: 
   const mealOptions = order.session && !sessions.includes(order.session) ? [...sessions, order.session] : sessions;
   const amountRows = [
     ['Total', subtotal],
+    ...(saving ? [['Discount', -saving]] as const : []),
     [`CGST ${bill.taxRate}%`, tax],
     [`SGST ${bill.taxRate}%`, tax],
     ['Grand total', total],
@@ -128,7 +129,7 @@ function InvoiceSheet({ bill, table, mono }: { bill: Bill; table: string; mono: 
           </div>
           {parcel && tableName && <RuledField label="Name of table">{tableName}</RuledField>}
           <RuledField label="Nativity">{order.nativity}</RuledField>
-          <RuledField label="Date & time of appointment">{order.source === 'Phone pre-order' ? [formatDate(order.date), order.time].filter(Boolean).join(' · ') : ''}</RuledField>
+          <RuledField label="Date & time of appointment">{order.source !== 'Walk-in' ? [formatDate(order.date), order.time].filter(Boolean).join(' · ') : ''}</RuledField>
           {parcel
             ? <RuledField label="Pickup time">{order.pickupTime?.replace('T', ' · ')}</RuledField>
             : <RuledField label="Happy time started at">{order.seatedAt}</RuledField>}
@@ -144,7 +145,7 @@ function InvoiceSheet({ bill, table, mono }: { bill: Bill; table: string; mono: 
 
       <table className="sr-invoice-items" aria-label="Itemized dishes">
         <colgroup><col /><col /><col /><col /><col /></colgroup>
-        <thead><tr>
+        <thead><tr className="sr-invoice-print-ref"><th colSpan={5}>Sweet Rascal · Bill {bill.id}{bill.voided ? ' · Voided' : ''}</th></tr><tr>
           <th scope="col">No.</th><th scope="col">Dish savoured</th><th scope="col">Qty</th><th scope="col">Cost per dish</th><th scope="col">Amount</th>
         </tr></thead>
         <tbody>
@@ -206,7 +207,7 @@ function ShareInvoice({ bill, close, onShare }: Pick<BillPreviewProps, 'bill' | 
         <li>Open the print dialog and choose <strong>Save as PDF</strong> or your device’s PDF export option.</li>
         <li>Open WhatsApp below. Attach the saved PDF to the prefilled message and send it.</li>
       </ol>
-      <button type="button" className="btn secondary sr-invoice-print-pdf" onClick={() => window.print()}><Printer size={16} /> Print / save PDF</button>
+      <button type="button" className="btn secondary sr-invoice-print-pdf" onClick={() => window.print()}><Printer size={16} /> Print A4 / save PDF</button>
       <p className="sr-invoice-share-note">Review the PDF before sharing. It includes the guest information and legacy fields shown in the preview.</p>
       <div className="field">
         <label htmlFor={fieldId}>Customer WhatsApp number</label>
@@ -236,7 +237,7 @@ export function BillPreview({ bill, table, close, canVoid, onVoid, onShare, onDe
   return (
     <div className="sr-invoice-preview">
       <div className="sr-invoice-controls">
-        <Title title={`Bill ${bill.id}`} subtitle="A4 invoice preview" action={<>
+        <Title title={`Bill ${bill.id}`} subtitle="Print or save as PDF in A4 portrait. Check that paper size is A4 in the print dialog." action={<>
           <button className="btn secondary" type="button" onClick={close}><ArrowLeft size={16} /> Bills</button>
           <div className="sr-invoice-modes" role="group" aria-label="Print colour">
             <button className="btn" type="button" aria-pressed={!mono} onClick={() => setMono(false)}>Colour</button>

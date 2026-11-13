@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
 
@@ -19,6 +19,12 @@ const playfair = localFont({
 export const metadata: Metadata = {
   title: 'Sweet Rascal | Restaurant Billing',
   description: 'Dining orders, guests and billing for Sweet Rascal, Yercaud.',
+  icons: { icon: '/icons/app-192.png', apple: '/icons/apple-180.png' },
+  appleWebApp: { capable: true, title: 'Sweet Rascal', statusBarStyle: 'default' },
+};
+
+export const viewport: Viewport = {
+  width: 'device-width', initialScale: 1, viewportFit: 'cover', themeColor: '#75201d',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
