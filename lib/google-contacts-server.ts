@@ -13,16 +13,22 @@ export class ContactError extends Error {
 }
 
 export function config() {
-  const origin = process.env.CONTACTS_ORIGIN;
+  const origin = process.env.CONTACTS_ORIGIN?.trim();
   const { GOOGLE_CONTACTS_CLIENT_ID: clientId, GOOGLE_CONTACTS_CLIENT_SECRET: clientSecret, GOOGLE_CONTACTS_ACCOUNT: account,
     CONTACTS_OWNER_CODE: owner, CONTACTS_STAFF_CODE: staff, CONTACTS_STORAGE_KEY: rawKey } = process.env;
   if (!origin || !clientId || !clientSecret || !account || !owner || !staff || owner === staff ||
       !/^[a-f\d]{32,}$/i.test(owner) || !/^[a-f\d]{32,}$/i.test(staff) || !/^[a-f\d]{64}$/i.test(rawKey ?? '')) return null;
   try {
     const url = new URL(origin);
-    if (url.origin !== origin || !(url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'localhost'))) return null;
-    return { origin, clientId, clientSecret, account: account.trim().toLowerCase(), owner, staff,
+    if ((url.origin !== origin && url.origin + '/' !== origin) ||
+      !(url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'localhost'))) return null;
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL?.trim();
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+    const redis = redisUrl && redisToken && new URL(redisUrl).protocol === 'https:'
+      ? { url: redisUrl, token: redisToken, key: 'sweet-rascal:contacts:' + pkceChallenge(url.origin) } : undefined;
+    return { origin: url.origin, clientId, clientSecret, account: account.trim().toLowerCase(), owner, staff,
       key: Buffer.from(rawKey!, 'hex'), secure: url.protocol === 'https:',
+      redis, storageReady: Boolean(redis) || !(process.env.VERCEL === '1' || redisUrl || redisToken),
       tokenFile: resolve(/* turbopackIgnore: true */ process.env.CONTACTS_TOKEN_FILE || '.sweet-rascal/google-contacts.enc') };
   } catch { return null; }
 }
@@ -48,9 +54,24 @@ export function randomValue() { return randomBytes(32).toString('base64url'); }
 export function pkceChallenge(verifier: string) { return createHash('sha256').update(verifier).digest('base64url'); }
 
 type Connection = { account: string; clientId: string; refresh: string };
-export async function connection(c: Config) {
+async function redisCommand<T>(redis: NonNullable<Config['redis']>, command: (string | number)[]): Promise<T> {
   try {
-    const [iv, tag, bytes] = (await readFile(c.tokenFile, 'utf8')).split('.');
+    const response = await fetch(redis.url, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + redis.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(command), cache: 'no-store', signal: AbortSignal.timeout(5_000),
+    });
+    const data = response.ok ? await response.json() : null;
+    if (data && !data.error && 'result' in data) return data.result as T;
+  } catch { /* Keep storage credentials and provider errors on the server. */ }
+  throw new ContactError(503, 'Google Contacts storage is unavailable. Try again.');
+}
+export async function connection(c: Config) {
+  const stored = c.redis
+    ? await redisCommand<string | null>(c.redis, ['GET', c.redis.key])
+    : await readFile(c.tokenFile, 'utf8').catch(() => null);
+  if (!stored) return null;
+  try {
+    const [iv, tag, bytes] = stored.split('.');
     const decrypt = createDecipheriv('aes-256-gcm', c.key, Buffer.from(iv, 'base64url'));
     decrypt.setAuthTag(Buffer.from(tag, 'base64url'));
     const value = JSON.parse(Buffer.concat([decrypt.update(Buffer.from(bytes, 'base64url')), decrypt.final()]).toString()) as Connection;
@@ -61,9 +82,16 @@ export async function saveConnection(c: Config, refresh: string) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', c.key, iv);
   const value = Buffer.concat([cipher.update(JSON.stringify({ account: c.account, clientId: c.clientId, refresh })), cipher.final()]);
+  const encrypted = [iv, cipher.getAuthTag(), value].map(part => part.toString('base64url')).join('.');
+  if (c.redis) {
+    if (await redisCommand(c.redis, ['SET', c.redis.key, encrypted]) !== 'OK') {
+      throw new ContactError(503, 'Could not save the Google Contacts connection.');
+    }
+    return;
+  }
   await mkdir(dirname(c.tokenFile), { recursive: true, mode: 0o700 });
   const temp = c.tokenFile + '.' + randomValue();
-  await writeFile(temp, [iv, cipher.getAuthTag(), value].map(part => part.toString('base64url')).join('.'), { mode: 0o600, flag: 'wx' });
+  await writeFile(temp, encrypted, { mode: 0o600, flag: 'wx' });
   try { await rename(temp, c.tokenFile); } finally { await unlink(temp).catch(() => {}); }
 }
 
@@ -115,6 +143,19 @@ export function serial<T>(action: () => Promise<T>) {
   const result = tail.then(action);
   tail = result.catch(() => {});
   return result;
+}
+export async function singleContactWrite<T>(c: Config, action: () => Promise<T>) {
+  if (!c.redis) return serial(action);
+  const key = c.redis.key + ':lock';
+  const owner = randomValue();
+  if (await redisCommand(c.redis, ['SET', key, owner, 'NX', 'EX', 90]) !== 'OK') {
+    throw new ContactError(409, 'Another contact is syncing. Please retry in a moment.');
+  }
+  try { return await action(); }
+  finally {
+    const release = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0";
+    await redisCommand(c.redis, ['EVAL', release, 1, key, owner]).catch(() => {});
+  }
 }
 export async function syncContact(c: Config, input: Contact) {
   const linked = await connection(c);

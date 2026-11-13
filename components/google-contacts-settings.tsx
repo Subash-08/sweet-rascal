@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Smartphone } from 'lucide-react';
 import { Field } from './ui';
 
-type Status = { configured: boolean; access?: 'owner' | 'staff' | null; connected?: boolean; account?: string };
+type Status = { configured: boolean; access?: 'owner' | 'staff' | null; connected?: boolean; account?: string; reason?: 'storage' | 'storage-unavailable' };
 const endpoint = '/api/google-contacts';
 
 export async function contactRequest(action: string, data: object = {}) {
@@ -47,7 +47,11 @@ export function GoogleContactsAccess({ ownerView }: { ownerView: boolean }) {
   }
   return <section className="panel settings-panel section-spacing">
     <div className="section-head"><h2><Smartphone size={17} aria-hidden="true" /> Google Contacts</h2></div>
-    {!status ? <p className="hint">Checking contact sync…</p> : !status.configured ? <p className="hint">Google Contacts is not configured on this server. Customer records still save in Sweet Rascal.</p> :
+    {!status ? <p className="hint">Checking contact sync…</p> : !status.configured ? <p className="hint">{
+      status.reason === 'storage' ? 'Google Contacts needs persistent storage on this deployment.' :
+      status.reason === 'storage-unavailable' ? 'Google Contacts storage is temporarily unavailable. Refresh to retry.' :
+      'Google Contacts is not configured on this server. Customer records still save in Sweet Rascal.'
+    }</p> :
       status.access ? <>
         <p className="hint">{status.connected ? 'Google Contacts is connected.' : 'Waiting for the owner to connect Google Contacts.'} {status.account}</p>
         <div className="row">

@@ -18,6 +18,10 @@ This pilot writes to one restaurant Google account. When the owner or an authori
 
 ## Before daily use
 
-This uses a running Next.js Node server (`npm run dev`, or `npm run build` then `npm start`). Static hosting alone cannot handle OAuth or securely keep the token. This pilot assumes one server instance and a persistent, private disk path for `CONTACTS_TOKEN_FILE`. Put that file outside public directories. The server encrypts the token with the separate storage key. For multiple replicas or ephemeral hosting, move the token and mutation coordination to shared storage before deployment.
+For local use, run `npm run dev` or `npm run build` followed by `npm start`. Keep `CONTACTS_TOKEN_FILE` outside public directories. The server encrypts the token with `CONTACTS_STORAGE_KEY` before saving it.
+
+For Vercel, add the Google Contacts variables from `.env.local` to **Project → Settings → Environment Variables** for **Production**. Set `CONTACTS_ORIGIN` to `https://sweet-rascal.vercel.app` and keep `https://sweet-rascal.vercel.app/api/google-contacts/callback` in Google's authorized redirect URIs. Connect an [Upstash Redis database](https://upstash.com/docs/redis/howto/vercelintegration) and confirm that `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are available in Production. Vercel stores the encrypted token in Redis, so the local `CONTACTS_TOKEN_FILE` setting can be left out.
+
+Deploy the updated code after saving the environment variables. Open [the live Google Contacts status endpoint](https://sweet-rascal.vercel.app/api/google-contacts) and look for `"configured": true`. Then unlock with the owner code and connect the Google account on the live site. The local connection and the live connection are stored separately.
 
 The owner and staff codes protect the contact endpoints. The workspace role switch and customer database remain a prototype; customer records are browser-local, even though Google contacts are shared. Plan real per-user authentication and a shared customer database before a multi-device production rollout. External / Testing refresh tokens for the Contacts scope expire after seven days; the owner must reconnect during the trial. Before production, review [Google’s verification requirements](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification).

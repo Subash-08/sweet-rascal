@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   callbackPath, config, connection, ContactError, contactInput, contactScope, cookieName, identity, matchSecret,
-  pkceChallenge, randomValue, saveConnection, serial, sign, stateCookie, syncContact, token, verify, type ContactRole,
+  pkceChallenge, randomValue, saveConnection, sign, singleContactWrite, stateCookie, syncContact, token, verify, type ContactRole,
 } from '../../../../lib/google-contacts-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 type Context = { params: Promise<{ action?: string[] }> };
 type Session = { role: ContactRole; fingerprint: string; exp: number };
 type Flow = { state: string; verifier: string; exp: number };
@@ -27,9 +28,14 @@ export async function GET(request: NextRequest, context: Context) {
   const settings = config();
   const action = ((await context.params).action ?? []).join('/');
   if (!settings) return action === '' ? response({ configured: false }) : response({ message: 'Contact sync is not configured.' }, 503);
+  if (!settings.storageReady) return action === '' ? response({ configured: false, reason: 'storage' }) : response({ message: 'Google Contacts needs persistent storage.' }, 503);
   const role = session(request, settings);
-  if (!action) return response({ configured: true, access: role ?? null, connected: role ? Boolean(await connection(settings)) : false,
-    account: role === 'owner' ? settings.account : undefined });
+  if (!action) {
+    try {
+      return response({ configured: true, access: role ?? null, connected: role ? Boolean(await connection(settings)) : false,
+        account: role === 'owner' ? settings.account : undefined });
+    } catch { return response({ configured: false, reason: 'storage-unavailable' }, 503); }
+  }
   if (action !== 'callback') return response({ message: 'Not found.' }, 404);
   if (role !== 'owner') return redirect(settings, 'unauthorized');
   const flow = verify<Flow>(settings, request.cookies.get(stateCookie)?.value);
@@ -43,7 +49,7 @@ export async function GET(request: NextRequest, context: Context) {
     const profile = await identity(credentials.access_token);
     if (profile.email_verified !== true || profile.email?.toLowerCase() !== settings.account) result = 'wrong-account';
     else if (credentials.refresh_token && credentials.scope?.split(' ').includes(contactScope)) {
-      await serial(() => saveConnection(settings, credentials.refresh_token!));
+      await singleContactWrite(settings, () => saveConnection(settings, credentials.refresh_token!));
       result = 'connected';
     }
   } catch { /* No Google tokens or details are returned in the redirect. */ }
@@ -55,6 +61,7 @@ export async function GET(request: NextRequest, context: Context) {
 export async function POST(request: NextRequest, context: Context) {
   const settings = config();
   if (!settings) return response({ message: 'Google Contacts is not configured.' }, 503);
+  if (!settings.storageReady) return response({ message: 'Google Contacts needs persistent storage.' }, 503);
   if (request.headers.get('origin') !== settings.origin) return response({ message: 'Invalid request origin.' }, 403);
   const action = ((await context.params).action ?? []).join('/');
   const role = session(request, settings);
@@ -90,7 +97,7 @@ export async function POST(request: NextRequest, context: Context) {
       const raw = await request.text();
       if (raw.length > 4096) return response({ message: 'Contact data is too long.' }, 400);
       const input = contactInput(JSON.parse(raw));
-      await serial(() => syncContact(settings, input));
+      await singleContactWrite(settings, () => syncContact(settings, input));
       return response({ synced: true });
     }
     return response({ message: 'Not found.' }, 404);
