@@ -1,173 +1,112 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Banknote, CalendarDays, ChartNoAxesCombined, CreditCard, HandCoins, IndianRupee, Package, ReceiptText, Smartphone, TriangleAlert, Utensils } from 'lucide-react';
-import { type Bill, type Database, type Payment, type Visit, payable, rupees, serviceDay, shortDate, sumPayments, timeZone, totals } from '../lib/demo';
-import { BillList, guestLabel, tableName } from './overview';
-import { Badge, DataTable, Empty, Field } from './ui';
+import { Download, FileText, Filter } from 'lucide-react';
+import { type Bill, type Database, type Visit, methods, rupees, serviceDay, shortDate, timeZone, totals } from '../lib/demo';
+import { guestLabel } from './overview';
+import { DataTable, Field, SearchInput, Title } from './ui';
+import { TicketCard } from './ticket-card';
 import '../app/reports.css';
 
-const dayMs = 86_400_000;
-const dayTime = (day: string) => Date.parse(day + 'T00:00:00Z');
-const shift = (day: string, count: number) => new Date(dayTime(day) + count * dayMs).toISOString().slice(0, 10);
-const period = (from: string, to: string) => from === to ? shortDate(from) : shortDate(from) + ' – ' + shortDate(to);
-const sale = (bill: Bill) => totals(bill.order.items, bill.taxRate, bill.order.discount);
-const localDate = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
-const paymentMethods = [
-  { name: 'Cash', icon: Banknote, color: '#922a27' },
-  { name: 'UPI', icon: Smartphone, color: '#d0583f' },
-  { name: 'Card', icon: CreditCard, color: '#edab83' },
-] as const;
-
-function SalesTrend({ from, to, bills }: { from: string; to: string; bills: Bill[] }) {
-  const days = Math.round((dayTime(to) - dayTime(from)) / dayMs) + 1;
-  const step = Math.ceil(days / 12);
-  const buckets = Array.from({ length: Math.ceil(days / step) }, (_, index) => {
-    const start = shift(from, index * step);
-    const end = shift(from, Math.min(days - 1, (index + 1) * step - 1));
-    const amount = bills.filter(bill => bill.date >= start && bill.date <= end).reduce((sum, bill) => sum + sale(bill).total, 0);
-    return { start, end, amount };
-  });
-  const [selected, setSelected] = useState<string>();
-  const peak = buckets.reduce((best, bucket) => bucket.amount > best.amount ? bucket : best);
-  const active = buckets.find(bucket => bucket.start === selected) ?? peak;
-  return <section className="panel report-card report-trend">
-    <div className="report-card-head"><div><h2>Sales over time</h2><p>Issued bills, including tax</p></div><ChartNoAxesCombined size={22} aria-hidden="true" /></div>
-    {bills.length ? <>
-      <div className="trend-reading" aria-live="polite"><span>{period(active.start, active.end)}</span><strong>{rupees(active.amount)}</strong></div>
-      <div className="trend-bars" aria-label="Select a period to see its sales">
-        {buckets.map(bucket => <button key={bucket.start} className="trend-bar" aria-pressed={active.start === bucket.start}
-          aria-label={period(bucket.start, bucket.end) + ': ' + rupees(bucket.amount)} onClick={() => setSelected(bucket.start)}>
-          <span className="trend-track"><i style={{ height: Math.max(2, bucket.amount / Math.max(1, peak.amount) * 100) + '%' }} /></span>
-          <small>{shortDate(bucket.start)}</small>
-        </button>)}
-      </div>
-    </> : <Empty title="No issued bills in this period" detail="Choose another date range to see sales." />}
-  </section>;
+const inServiceDay = (at: string) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(at));
+function csvDownload(name: string, rows: (string | number)[][]) {
+  const csv = rows.map(row => row.map(value => {
+    const text = String(value);
+    const safe = typeof value === 'string' && /^[=+\-@\t\r]/.test(text) ? "'" + text : text;
+    return '"' + safe.replaceAll('"', '""') + '"';
+  }).join(',')).join('\r\n');
+  const href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = href; link.download = name; document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
-
-function CollectionMix({ payments }: { payments: Payment[] }) {
-  const collected = sumPayments(payments);
-  let cursor = 0;
-  const slices = paymentMethods.map(method => {
-    const matching = payments.filter(payment => payment.method === method.name);
-    const amount = sumPayments(matching);
-    const share = collected ? amount / collected * 100 : 0;
-    const start = cursor;
-    cursor += share;
-    return { ...method, amount, share, start, count: matching.length };
-  });
-  const gradient = collected ? 'conic-gradient(' + slices.map(slice => slice.color + ' ' + slice.start + '% ' + (slice.start + slice.share) + '%').join(', ') + ')' : undefined;
-  return <section className="panel report-card">
-    <div className="report-card-head"><div><h2>Payment mix</h2><p>By date payment was recorded</p></div><CreditCard size={21} aria-hidden="true" /></div>
-    <div className="report-donut" style={{ background: gradient }}><div><small>Collected</small><strong>{rupees(collected)}</strong></div></div>
-    <ul className="report-legend">{slices.map(({ name, icon: Icon, color, amount, share, count }) => <li key={name}>
-      <Icon size={17} style={{ color }} aria-hidden="true" /><div><b>{name}</b><small>{count} {count === 1 ? 'payment' : 'payments'}</small></div>
-      <div><b>{rupees(amount)}</b><small>{Math.round(share)}%</small></div>
-    </li>)}</ul>
-  </section>;
-}
-
 export function Reports({ data, viewBill, openOrder }: { data: Database; viewBill: (bill: Bill) => void; openOrder: (order: Visit) => void }) {
   const today = serviceDay();
-  const [from, setFrom] = useState(() => shift(today, -6));
+  const [from, setFrom] = useState(today.slice(0, 8) + '01');
   const [to, setTo] = useState(today);
-  const [range, setRange] = useState('Last 7 days');
-  const [rankBy, setRankBy] = useState<'quantity' | 'revenue'>('quantity');
-  const [ledger, setLedger] = useState('Bills');
+  const [tab, setTab] = useState('Sales');
+  const [method, setMethod] = useState('All methods');
+  const [service, setService] = useState('All service');
+  const [query, setQuery] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const weekStart = new Date(Date.parse(today + 'T12:00:00Z') - 6 * 86_400_000).toISOString().slice(0, 10);
   const valid = Boolean(from && to && from <= to);
-  const inRange = (date: string) => valid && date >= from && date <= to;
-  const paidBills = data.bills.filter(bill => !bill.voided);
-  const bills = paidBills.filter(bill => inRange(bill.date));
-  const voids = data.bills.filter(bill => bill.voided && inRange(bill.date));
-  const { sales, tax, tips } = bills.reduce((sum, bill) => {
-    const amount = sale(bill);
-    return { sales: sum.sales + amount.total, tax: sum.tax + amount.tax * 2, tips: sum.tips + (bill.order.tip ?? 0) };
-  }, { sales: 0, tax: 0, tips: 0 });
-  const span = valid ? Math.round((dayTime(to) - dayTime(from)) / dayMs) + 1 : 0;
-  const priorStart = valid ? shift(from, -span) : '';
-  const priorSales = paidBills.filter(bill => bill.date < from && bill.date >= priorStart).reduce((sum, bill) => sum + sale(bill).total, 0);
-  const change = priorSales ? Math.round((sales - priorSales) / priorSales * 100) : null;
-  const billedIds = new Set(data.bills.map(bill => bill.order.id));
-  const open = data.orders.filter(order => !billedIds.has(order.id) && order.status !== 'Cancelled' && order.status !== 'Billed');
-  const advances = [...paidBills.map(bill => bill.order), ...open].flatMap(order => order.advance && inRange(order.advance.date) ? [order.advance] : []);
-  const payments = [...paidBills.flatMap(bill => bill.payments), ...open.flatMap(order => order.payments ?? [])].filter(payment => inRange(payment.date)).concat(advances);
-  const outstanding = open.flatMap(order => {
-    if (!order.guestLeftAt || !inRange(localDate.format(new Date(order.guestLeftAt)))) return [];
-    const due = payable(order, data.business.taxRate) - (order.advance?.amount ?? 0) - sumPayments(order.payments ?? []);
-    return due > 0 ? [{ ...order, due }] : [];
+  const inRange = (day: string) => valid && day >= from && day <= to;
+  const matches = (text: string) => text.toLowerCase().includes(query.trim().toLowerCase());
+  const bills = data.bills.filter(bill => !bill.voided && inRange(bill.date) &&
+    (service === 'All service' || (bill.order.kind || 'Dine-in') === service) &&
+    (method === 'All methods' || bill.payments.some(payment => payment.method === method) || bill.order.advance?.method === method) &&
+    matches(bill.id + ' ' + guestLabel(bill.order)));
+  const refunds = (data.refunds ?? []).filter(refund => {
+    const bill = data.bills.find(bill => bill.id === refund.billId);
+    return inRange(inServiceDay(refund.at)) && (method === 'All methods' || refund.method === method) &&
+      (service === 'All service' || (bill?.order.kind || 'Dine-in') === service) &&
+      matches(refund.billId + ' ' + refund.reason + ' ' + refund.actor);
   });
-  const orders = data.orders.filter(order => order.status !== 'Cancelled' && inRange(order.date));
-  const dishes = new Map<string, { id: string; name: string; quantity: number; revenue: number }>();
-  for (const bill of bills) for (const line of bill.order.items) {
-    const key = line.name.trim().toLowerCase();
-    const item = dishes.get(key) ?? { id: key, name: line.name, quantity: 0, revenue: 0 };
-    item.quantity += line.quantity;
-    item.revenue += line.price * line.quantity;
-    dishes.set(key, item);
+  const activity = data.orders.flatMap(order => (order.events ?? []).map(event => ({ ...event, orderId: order.id, kind: order.kind || 'Dine-in' })))
+    .filter(event => inRange(inServiceDay(event.at)) && (service === 'All service' || event.kind === service) &&
+      matches([event.orderId, event.actor, event.action, event.detail].join(' ')))
+    .sort((a, b) => b.at.localeCompare(a.at));
+  const sales = bills.reduce((sum, bill) => sum + totals(bill.order.items, bill.taxRate, bill.order.discount).total, 0);
+  const refundAmount = refunds.reduce((sum, refund) => sum + refund.amount, 0);
+  const gst = bills.reduce((sum, bill) => sum + totals(bill.order.items, bill.taxRate, bill.order.discount).tax * 2, 0);
+  const count = tab === 'Sales' ? bills.length : tab === 'Refunds' ? refunds.length : activity.length;
+  function download() {
+    if (tab === 'Sales') csvDownload('Sweet-Rascal-Sales-' + from + '-' + to + '.csv', [
+      ['Bill', 'Date', 'Guest', 'Service', 'Sales including GST (INR)', 'GST (INR)', 'Tip (INR)'],
+      ...bills.map(bill => { const value = totals(bill.order.items, bill.taxRate, bill.order.discount);
+        return [bill.id, bill.date, guestLabel(bill.order), bill.order.kind || 'Dine-in', value.total / 100, value.tax * 2 / 100, (bill.order.tip || 0) / 100]; }),
+    ]);
+    else if (tab === 'Refunds') csvDownload('Sweet-Rascal-Refunds-' + from + '-' + to + '.csv', [
+      ['Reference', 'Bill', 'Time', 'Amount returned (INR)', 'Sales reduction (INR)', 'GST portion (INR)', 'Tip returned (INR)', 'Method', 'Reason', 'By', 'Cancelled'],
+      ...refunds.map(refund => [refund.id, refund.billId, refund.at, refund.amount / 100, refund.salesAmount / 100, refund.taxAmount / 100, refund.tipAmount / 100, refund.method, refund.reason, refund.actor, refund.cancelled ? 'Yes' : 'No']),
+    ]);
+    else csvDownload('Sweet-Rascal-Activity-' + from + '-' + to + '.csv', [
+      ['Order', 'Time', 'Staff', 'Action', 'Details'],
+      ...activity.map(event => [event.orderId, event.at, event.actor, event.action, event.detail || '']),
+    ]);
   }
-  const ranked = [...dishes.values()].sort((a, b) => b[rankBy] - a[rankBy] || a.name.localeCompare(b.name));
-  const sessions = new Map<string, number>();
-  for (const bill of bills) sessions.set(bill.order.session, (sessions.get(bill.order.session) ?? 0) + sale(bill).total);
-  const sessionSales = [...sessions].sort((a, b) => b[1] - a[1]);
-  const presets = { Today: today, 'Last 7 days': shift(today, -6), 'This month': today.slice(0, 8) + '01' };
-  const kpis = [
-    { label: 'Total sales', value: rupees(sales), hint: 'Includes GST · excludes tips', icon: IndianRupee },
-    { label: 'Payments collected', value: rupees(sumPayments(payments)), hint: 'Includes advances and tips received', icon: HandCoins },
-    { label: 'Paid bills', value: bills.length, hint: 'Excludes voided bills', icon: ReceiptText },
-    { label: 'Average bill', value: bills.length ? rupees(Math.round(sales / bills.length)) : '—', hint: 'Sales per paid bill', icon: ChartNoAxesCombined },
-  ];
-
   return <div className="reports">
-    <header className="report-hero"><div><p className="report-period"><CalendarDays size={16} /> {valid ? period(from, to) : 'Select a date range'} · IST</p><h1>Reports</h1><p>Sales, payments, and service at Sweet Rascal.</p></div><div className="report-hero-icon"><ChartNoAxesCombined size={35} strokeWidth={1.5} aria-hidden="true" /></div></header>
-    <section className="panel report-filters" aria-label="Report period">
-      <div className="chips">{Object.entries(presets).map(([name, start]) => <button key={name} className={range === name ? 'active' : ''} aria-pressed={range === name} onClick={() => { setRange(name); setFrom(start); setTo(today); }}>{name}</button>)}
-        <button className={range === 'Custom' ? 'active' : ''} aria-pressed={range === 'Custom'} onClick={() => { setRange('Custom'); document.getElementById('report-from')?.focus(); }}>Custom</button>
+    <Title title="Reports" subtitle="Filter and download sales, refunds and service activity." action={<button className="btn primary" disabled={!valid || !count} onClick={download}><Download size={17} aria-hidden="true" /> Download CSV</button>} />
+    <section className="panel report-filters" aria-label="Report filters">
+      <div className="report-filter-toolbar"><div className="chips">{['Sales', 'Refunds', 'Activity'].map(name => <button key={name} className={tab === name ? 'active' : ''} aria-pressed={tab === name} onClick={() => { setTab(name); setQuery(''); }}>{name}</button>)}</div>
+        <button className="btn secondary report-filter-toggle" aria-expanded={filtersOpen} aria-controls="report-filter-fields" onClick={() => setFiltersOpen(open => !open)}><Filter size={16} aria-hidden="true" /> Filters</button></div>
+      <div className="chips report-presets" aria-label="Quick date range">{[['Today', today], ['Last 7 days', weekStart], ['This month', today.slice(0, 8) + '01']].map(([label, start]) =>
+        <button key={label} aria-pressed={from === start && to === today} className={from === start && to === today ? 'active' : ''} onClick={() => { setFrom(start); setTo(today); }}>{label}</button>)}</div>
+      <div id="report-filter-fields" className={'report-filter-grid' + (filtersOpen ? ' is-open' : '')}>
+        <Field label="Start date"><input type="date" value={from} onChange={event => setFrom(event.target.value)} /></Field>
+        <Field label="End date"><input type="date" value={to} onChange={event => setTo(event.target.value)} /></Field>
+        <Field label="Service"><select value={service} onChange={event => setService(event.target.value)}><option>All service</option><option>Dine-in</option><option>Parcel</option></select></Field>
+        {tab !== 'Activity' && <Field label={tab === 'Sales' ? 'Bills paid using' : 'Refund method'}><select value={method} onChange={event => setMethod(event.target.value)}><option>All methods</option>{methods.map(value => <option key={value}>{value}</option>)}</select></Field>}
       </div>
-      <div className="report-date-fields">
-        <label className="field" htmlFor="report-from">Start date<input id="report-from" type="date" value={from} onChange={event => { setFrom(event.target.value); setRange('Custom'); }} /></label>
-        <Field label="End date"><input type="date" value={to} onChange={event => { setTo(event.target.value); setRange('Custom'); }} /></Field>
-      </div>
+      <SearchInput value={query} onChange={setQuery} placeholder={tab === 'Activity' ? 'Search order, staff or action…' : 'Search bill, guest or reason…'} />
     </section>
     {!valid ? <p className="error" role="alert">Choose a start date on or before the end date.</p> : <>
-      <div className="report-kpis">{kpis.map(({ label, value, hint, icon: Icon }, index) => <section className="panel report-kpi" key={label}>
-        <div><span>{label}</span><i><Icon size={18} aria-hidden="true" /></i></div><strong>{value}</strong>
-        {index === 0 && change !== null && <p className="report-change" data-fell={change < 0}>{change < 0 ? <ArrowDownRight size={14} /> : <ArrowUpRight size={14} />}{Math.abs(change)}% vs previous {span === 1 ? 'day' : span + ' days'}</p>}
-        <small>{hint}</small>
-      </section>)}</div>
-      <div className="report-grid report-primary"><SalesTrend key={from + ':' + to} from={from} to={to} bills={bills} /><CollectionMix payments={payments} /></div>
-      <div className="report-grid">
-        <section className="panel report-card">
-          <div className="report-card-head"><div><h2>Top dishes</h2><p>From paid bills · before tax and bill discounts</p></div><select aria-label="Rank dishes by" value={rankBy} onChange={event => setRankBy(event.target.value as typeof rankBy)}><option value="quantity">By quantity</option><option value="revenue">By sales</option></select></div>
-          {ranked.length ? <ol className="report-ranking">{ranked.slice(0, 7).map((item, index) => <li key={item.id}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{item.name}</b><small>{item.quantity} sold</small></div><strong>{rupees(item.revenue)}</strong></li>)}</ol> : <Empty title="No dishes sold in this period" />}
-        </section>
-        <section className="panel report-card">
-          <div className="report-card-head"><div><h2>Service breakdown</h2><p>Sales and bill count by service type</p></div><Utensils size={21} aria-hidden="true" /></div>
-          <div className="report-service">{(['Dine-in', 'Parcel'] as const).map(kind => {
-            const group = bills.filter(bill => (bill.order.kind ?? 'Dine-in') === kind);
-            const Icon = kind === 'Parcel' ? Package : Utensils;
-            return <div key={kind}><Icon size={18} aria-hidden="true" /><span>{kind}<small>{group.length} {group.length === 1 ? 'bill' : 'bills'}</small></span><b>{rupees(group.reduce((sum, bill) => sum + sale(bill).total, 0))}</b></div>;
-          })}</div>
-          <h3 className="report-subhead">Sales by meal session</h3>
-          {sessionSales.length ? <ul className="report-meals">{sessionSales.map(([name, value]) => <li key={name}><div><span>{name}</span><b>{rupees(value)}</b></div><div className="bar-track"><span style={{ width: (sales ? value / sales * 100 : 0) + '%' }} /></div></li>)}</ul> : <p className="report-muted">No meal sessions recorded.</p>}
-        </section>
-      </div>
-      <section className="panel report-card">
-        <div className="report-card-head"><div><h2>Day-end review</h2><p>Totals for the selected range</p></div><TriangleAlert size={21} aria-hidden="true" /></div>
-        <dl className="report-closeout">{[
-          ['GST on issued bills', rupees(tax)], ['Tips on issued bills', rupees(tips)], ['Advances collected', rupees(sumPayments(advances))],
-          ['Unpaid departures', rupees(outstanding.reduce((sum, order) => sum + order.due, 0))], ['Voided bills', voids.length], ['Orders by visit date', orders.length],
-        ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      <section className="panel report-record-summary" aria-live="polite">
+        <Filter size={18} aria-hidden="true" /><span>{count} {tab === 'Refunds' ? 'refund' : tab === 'Activity' ? 'activity' : 'sales'} records · {shortDate(from)} – {shortDate(to)}</span>
+        <strong>{tab === 'Sales' ? rupees(sales, true) : tab === 'Refunds' ? rupees(refundAmount, true) + ' returned' : ''}</strong>
+        {tab === 'Sales' && <small>Includes {rupees(gst, true)} GST. Refunds are listed by refund date in the Refunds tab.</small>}
       </section>
-      <section className="report-ledger">
-        <div className="report-card-head"><div><h2>Records</h2><p>Open a bill or follow up on a balance.</p></div></div>
-        <div className="chips view-tabs">{[['Bills', bills.length], ['Unpaid departures', outstanding.length], ['Voids', voids.length]].map(([name, count]) => <button key={name} aria-pressed={ledger === name} className={ledger === name ? 'active' : ''} onClick={() => setLedger(String(name))}>{name} <span className="count">{count}</span></button>)}</div>
-        {ledger === 'Unpaid departures' ? <DataTable rows={outstanding} empty="No unpaid departures in this period" columns={[
-          { label: 'Order', render: order => <button className="text-button" onClick={() => openOrder(order)}>{order.id} <ArrowRight size={14} /></button> },
-          { label: 'Guest', render: guestLabel }, { label: 'Service', render: order => order.kind === 'Parcel' ? 'Parcel' : tableName(data, order.table) },
-          { label: 'Status', render: () => <Badge tone="amber">Balance due</Badge> }, { label: 'Amount due', numeric: true, render: order => <b>{rupees(order.due)}</b> },
-        ]} /> : <BillList key={ledger} bills={ledger === 'Voids' ? voids : bills} view={viewBill} />}
-      </section>
+      {tab === 'Sales' ? <DataTable key={tab + from + to + method + service + query} rows={bills} empty="No sales match these filters" mobileCard={bill => <TicketCard reference={bill.id} guest={guestLabel(bill.order)} context={bill.date + ' · ' + (bill.order.kind || 'Dine-in')} status={<FileText size={17} />} amount={<b>{rupees(totals(bill.order.items, bill.taxRate, bill.order.discount).total, true)}</b>} action="View bill" onOpen={() => viewBill(bill)} />}
+        columns={[
+          { label: 'Bill', render: bill => <button className="text-button" onClick={() => viewBill(bill)}>{bill.id}</button> },
+          { label: 'Date', render: bill => bill.date, sort: bill => bill.date },
+          { label: 'Guest', render: bill => guestLabel(bill.order), sort: bill => guestLabel(bill.order) },
+          { label: 'Service', render: bill => bill.order.kind || 'Dine-in' },
+          { label: 'Sales incl. GST', numeric: true, render: bill => rupees(totals(bill.order.items, bill.taxRate, bill.order.discount).total, true) },
+        ]} /> : tab === 'Refunds' ? <DataTable rows={refunds} empty="No refunds match these filters" mobileCard={refund => <TicketCard reference={refund.billId} guest={rupees(refund.amount, true) + ' returned'} context={refund.reason + ' · ' + refund.actor} status={<span>{refund.cancelled ? 'Cancelled' : 'Refunded'}</span>} />}
+          columns={[
+            { label: 'Bill', render: refund => <button className="text-button" onClick={() => { const bill = data.bills.find(bill => bill.id === refund.billId); if (bill) viewBill(bill); }}>{refund.billId}</button> },
+            { label: 'Date', render: refund => inServiceDay(refund.at), sort: refund => refund.at },
+            { label: 'Returned', numeric: true, render: refund => rupees(refund.amount, true) },
+            { label: 'Reason', render: refund => refund.reason }, { label: 'By', render: refund => refund.actor },
+            { label: 'Status', render: refund => refund.cancelled ? 'Cancelled' : 'Refunded' },
+          ]} /> : <DataTable rows={activity} empty="No activity matches these filters" mobileCard={event => <TicketCard reference={event.orderId} guest={event.action} context={event.actor + ' · ' + new Date(event.at).toLocaleString('en-IN', { timeZone }) + ' · ' + (event.detail || '')} status={<span>{event.kind}</span>} />}
+            columns={[
+              { label: 'Order', render: event => <button className="text-button" onClick={() => { const order = data.orders.find(order => order.id === event.orderId); if (order) openOrder(order); }}>{event.orderId}</button> },
+              { label: 'Time (IST)', render: event => new Date(event.at).toLocaleString('en-IN', { timeZone }), sort: event => event.at },
+              { label: 'Staff', render: event => event.actor }, { label: 'Action', render: event => event.action }, { label: 'Details', render: event => event.detail || '—' },
+            ]} />}
     </>}
   </div>;
 }

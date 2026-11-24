@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Smartphone } from 'lucide-react';
 import { Field } from './ui';
 
-type Status = { configured: boolean; access?: 'owner' | 'staff' | null; connected?: boolean; account?: string; reason?: 'storage' | 'storage-unavailable' };
+type Status = { configured: boolean; access?: 'owner' | 'staff' | null; connected?: boolean; account?: string; appAuth?: boolean; reason?: 'storage' | 'storage-unavailable' };
 const endpoint = '/api/google-contacts';
 
 export async function contactRequest(action: string, data: object = {}) {
@@ -52,11 +52,11 @@ export function GoogleContactsAccess({ ownerView }: { ownerView: boolean }) {
       status.reason === 'storage-unavailable' ? 'Google Contacts storage is temporarily unavailable. Refresh to retry.' :
       'Google Contacts is not configured on this server. Customer records still save in Sweet Rascal.'
     }</p> :
-      status.access ? <>
+      status.appAuth && !status.access ? <div><p className="hint">Your session has expired. Sign in again to use Google Contacts.</p><button className="btn secondary" onClick={() => location.reload()}>Sign in again</button></div> : status.access ? <>
         <p className="hint">{status.connected ? 'Google Contacts is connected.' : 'Waiting for the owner to connect Google Contacts.'} {status.account}</p>
         <div className="row">
           {ownerView && status.access === 'owner' && <button className="btn primary" disabled={busy} onClick={() => void act('authorize')}>{status.connected ? 'Reconnect Google account' : 'Connect Google account'}</button>}
-          <button className="btn secondary" disabled={busy} onClick={() => void act('lock')}>Lock contact sync here</button>
+          {!status.appAuth && <button className="btn secondary" disabled={busy} onClick={() => void act('lock')}>Lock contact sync here</button>}
         </div>
         {ownerView && status.access !== 'owner' && <p className="hint">To connect or change the account, lock this browser and unlock it with the owner code.</p>}
       </> : <form onSubmit={event => void act('unlock', event)}>

@@ -1,10 +1,11 @@
 'use client';
 
 import { cloneElement, isValidElement, useId, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowDownUp, ChevronLeft, ChevronRight, Heart, Search, X, Inbox } from 'lucide-react';
+import { ArrowDownUp, ChevronLeft, ChevronRight, Search, X, Inbox } from 'lucide-react';
+import { HeartMark } from './heart-mark';
 
 export function Brand() {
-  return <span className="brand"><span className="brand-mark"><Heart size={21} aria-hidden="true" /></span><span><strong>Sweet Rascal</strong><small>YERCAUD · RESTAURANT</small></span></span>;
+  return <span className="brand"><span className="brand-mark"><HeartMark /></span><span><strong>Sweet Rascal</strong><small>YERCAUD · RESTAURANT</small></span></span>;
 }
 
 export function Badge({ children, tone }: { children: ReactNode; tone?: 'green' | 'amber' | 'blue' | 'gray' | 'red' }) {
@@ -28,14 +29,20 @@ export function Dialog({ title, description, close, children, large }: { title: 
 }
 
 export function Form({ children, onSave, close, label = 'Save', danger = false }: {
-  children: ReactNode; onSave: (data: FormData) => string | void; close: () => void; label?: string; danger?: boolean;
+  children: ReactNode; onSave: (data: FormData) => string | void | Promise<string | void>; close: () => void; label?: string; danger?: boolean;
 }) {
   const [error, setError] = useState('');
-  function submit(event: FormEvent<HTMLFormElement>) {
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError(onSave(new FormData(event.currentTarget)) ?? '');
+    if (busy) return;
+    const data = new FormData(event.currentTarget);
+    setBusy(true); setError('');
+    try { setError(await onSave(data) ?? ''); }
+    catch (error) { setError(error instanceof Error ? error.message : 'Could not save. Please try again.'); }
+    finally { setBusy(false); }
   }
-  return <form onSubmit={submit}><div className="form-grid">{children}</div>{error && <p className="error" role="alert">{error}</p>}<div className="dialog-actions"><button className="btn secondary" type="button" onClick={close}>Cancel</button><button className={'btn ' + (danger ? 'danger' : 'primary')}>{label}</button></div></form>;
+  return <form onSubmit={submit} aria-busy={busy}><fieldset className="form-grid form-fields" disabled={busy}>{children}</fieldset>{error && <p className="error" role="alert">{error}</p>}<div className="dialog-actions"><button className="btn secondary" type="button" disabled={busy} onClick={close}>Cancel</button><button disabled={busy} className={'btn ' + (danger ? 'danger' : 'primary')}>{busy ? 'Saving…' : label}</button></div></form>;
 }
 
 export function Title({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {

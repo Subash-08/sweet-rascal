@@ -2,6 +2,8 @@
 
 This pilot writes to one restaurant Google account. When the owner or an authorized staff browser saves a customer, Sweet Rascal tries to save the contact to Google. The phone must be signed in to that same account with Contacts sync enabled. Google controls when the contact becomes visible on the phone.
 
+With the connected foundation enabled through MONGODB_URI, sign in to Sweet Rascal as Owner to connect Google. Staff accounts can then sync saved customers through their application session. The encrypted Google token and a shared mutation lock are stored in MongoDB. The access-code steps below apply to the browser-only pilot. See the [current setup checklist](production-foundation-checklist.md) for the Atlas-backed workspace.
+
 ## Set up once
 
 1. Use a dedicated test Google account and dummy contacts first. In [Google Cloud Console](https://console.cloud.google.com/), create a project, enable the [People API](https://console.cloud.google.com/apis/library/people.googleapis.com), and configure the OAuth consent screen. In External / Testing mode, add that account as a test user.
@@ -20,7 +22,7 @@ This pilot writes to one restaurant Google account. When the owner or an authori
 
 For local use, run `npm run dev` or `npm run build` followed by `npm start`. Keep `CONTACTS_TOKEN_FILE` outside public directories. The server encrypts the token with `CONTACTS_STORAGE_KEY` before saving it.
 
-For Vercel, add the Google Contacts variables from `.env.local` to **Project → Settings → Environment Variables** for **Production**. Set `CONTACTS_ORIGIN` to `https://sweet-rascal.vercel.app` and keep `https://sweet-rascal.vercel.app/api/google-contacts/callback` in Google's authorized redirect URIs. Connect an [Upstash Redis database](https://upstash.com/docs/redis/howto/vercelintegration) and confirm that `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are available in Production. Vercel stores the encrypted token in Redis, so the local `CONTACTS_TOKEN_FILE` setting can be left out.
+For Vercel, add the Google Contacts variables from `.env.local` to **Project → Settings → Environment Variables** for **Production**. Set `CONTACTS_ORIGIN` and `APP_ORIGIN` to `https://sweet-rascal.vercel.app` and keep `https://sweet-rascal.vercel.app/api/google-contacts/callback` in Google's authorized redirect URIs. Set MONGODB_URI, MONGODB_DB and initial-owner credentials using the foundation checklist. The Google connection uses MongoDB when configured. The earlier Redis pilot remains supported for existing installations.
 
 Deploy the updated code after saving the environment variables. Open [the live Google Contacts status endpoint](https://sweet-rascal.vercel.app/api/google-contacts) and look for `"configured": true`. Then unlock with the owner code and connect the Google account on the live site. The local connection and the live connection are stored separately.
 

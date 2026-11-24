@@ -1,12 +1,15 @@
 'use client';
 
-import { useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, Banknote, Check, CreditCard, Minus, Pencil, Percent, Plus, Smartphone, Trash2 } from 'lucide-react';
-import { type Database, type Discount, type Line, type Method, type Payment, type Role, type Staff, type Visit, methods, occupiesTable, parseMoney, rupees, serviceDay, sessions, shortDate, sumPayments, timeZone, totals } from '../lib/demo';
+import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
+import { ArrowLeft, ArrowRight, Banknote, Check, CreditCard, HandCoins, Minus, Pencil, Percent, Plus, Smartphone, Trash2 } from 'lucide-react';
+import { type Database, type Discount, type Line, type Method, type Payment, type Role, type Staff, type Visit, methods, occupiesTable, parseMoney, returningVisitFields, rupees, serviceDay, sessions, shortDate, sumPayments, timeZone, totals } from '../lib/demo';
+import { workspaceRequest } from '../lib/workspace-client';
 import '../app/order-workspace.css';
 import { Badge, Dialog, Empty, Field, SearchInput, Title } from './ui';
+import { CustomerSearch } from './customer-search';
 
 export function Totals({ order, taxRate, paid }: { order: Visit; taxRate: number; paid?: number }) {
+  taxRate = order.taxRate ?? taxRate;
   const { subtotal, saving, tax, total } = totals(order.items, taxRate, order.discount);
   const advance = order.advance?.amount ?? 0;
   return <dl className="totals">
@@ -23,19 +26,23 @@ export function Totals({ order, taxRate, paid }: { order: Visit; taxRate: number
   </dl>;
 }
 
+type SaveResult = string | void | Promise<string | void>;
 type ProgressAction = 'taken' | 'served' | 'left' | 'ready' | 'draft';
+type VisitPreferences = Partial<Pick<Visit, typeof returningVisitFields[number]>>;
 
 type OrderEditorProps = {
+  connected?: boolean;
+  rememberCustomer?: (guest: import('../lib/demo').Guest) => void;
   order: Visit;
   update: (visit: Visit) => void;
   data: Database;
   cancel: () => void;
-  save: (visit: Visit) => string | void;
-  checkout: (visit: Visit) => string | void;
+  save: (visit: Visit) => SaveResult;
+  checkout: (visit: Visit) => SaveResult;
   addGuest: () => void;
   staff?: Staff[];
   atBillingDesk?: boolean;
-  onProgress?: (visit: Visit, action: ProgressAction) => string | void;
+  onProgress?: (visit: Visit, action: ProgressAction) => SaveResult;
 };
 
 const localClock = (date: Date) => new Intl.DateTimeFormat('en-GB', {
@@ -43,11 +50,10 @@ const localClock = (date: Date) => new Intl.DateTimeFormat('en-GB', {
 }).format(date);
 
 export function OrderEditor({
-  order, update, data, cancel, save, checkout, addGuest, staff, onProgress, atBillingDesk,
+  order, update, data, cancel, save, checkout, addGuest, staff, onProgress, atBillingDesk, connected = false, rememberCustomer,
 }: OrderEditorProps) {
   const [category, setCategory] = useState('');
   const [query, setQuery] = useState('');
-  const [guestQuery, setGuestQuery] = useState('');
   const [error, setError] = useState('');
   const [step, setStep] = useState<'dishes' | 'visit'>('dishes');
   const [mobilePane, setMobilePane] = useState<'menu' | 'order'>(atBillingDesk && order.items.length ? 'order' : 'menu');
@@ -56,6 +62,11 @@ export function OrderEditor({
   const [advanceMethod, setAdvanceMethod] = useState<Method>(order.advance?.method ?? 'UPI');
   const [dishEditor, setDishEditor] = useState<Line | 'special'>();
   const [confirmLeft, setConfirmLeft] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
+  const [prefillGuestId, setPrefillGuestId] = useState('');
+  const autoFilled = useRef<VisitPreferences>({});
+  const autoFilledGuest = useRef('');
 
   const parcel = order.kind === 'Parcel';
   const preorder = order.source !== 'Walk-in';
@@ -67,8 +78,6 @@ export function OrderEditor({
     .map(visit => visit.table));
   const registeredGuest = data.guests.find(guest => guest.id === order.guestId);
   const guestPhone = order.guestPhone ?? registeredGuest?.phone ?? '';
-  const guests = data.guests.filter(guest => guest.id === order.guestId ||
-    [guest.name, guest.phone].join(' ').toLowerCase().includes(guestQuery.trim().toLowerCase()));
   const dishes = data.dishes.filter(dish => (!category || dish.category === category) &&
     dish.name.toLowerCase().includes(query.trim().toLowerCase()));
   const itemCount = order.items.reduce((count, line) => count + line.quantity, 0);
@@ -86,7 +95,7 @@ export function OrderEditor({
     } : undefined,
   };
   const paid = sumPayments(order.payments ?? []);
-  const total = totals(order.items, data.business.taxRate, order.discount).total + (order.tip ?? 0);
+  const total = totals(order.items, order.taxRate ?? data.business.taxRate, order.discount).total + (order.tip ?? 0);
   const due = total - (preview.advance?.amount ?? 0) - paid;
   const paymentStatus = due < 0 ? 'Overpaid' : due === 0 && itemCount ? 'Paid' : preview.advance || paid ? 'Part paid' : 'Unpaid';
 
@@ -94,6 +103,58 @@ export function OrderEditor({
     update({ ...order, ...values });
     setError('');
   }
+
+  function clearPreviousPreferences(guestId: string) {
+    const cleared: VisitPreferences = {};
+    if (guestId !== autoFilledGuest.current) {
+      for (const field of returningVisitFields) {
+        if (autoFilled.current[field] && autoFilled.current[field] === order[field]) cleared[field] = '';
+      }
+      autoFilled.current = {};
+    }
+    return cleared;
+  }
+
+  function changeGuest(values: Partial<Visit>) {
+    setPrefillGuestId(values.guestId ?? '');
+    patch({ ...clearPreviousPreferences(values.guestId ?? ''), ...values });
+  }
+
+  const applyPreferences = useEffectEvent((guestId: string, preferences: VisitPreferences) => {
+    if (order.guestId !== guestId || saveLock.current) return;
+    const fields: VisitPreferences = {};
+    for (const field of returningVisitFields) {
+      if (!order[field]?.trim() && preferences[field]) fields[field] = preferences[field];
+    }
+    if (Object.keys(fields).length) {
+      autoFilled.current = fields;
+      autoFilledGuest.current = guestId;
+      patch(fields);
+    }
+  });
+
+  const clearAfterCustomerCreated = useEffectEvent((guestId: string) => {
+    const cleared = clearPreviousPreferences(guestId);
+    if (Object.keys(cleared).length) patch(cleared);
+  });
+  useEffect(() => { clearAfterCustomerCreated(order.guestId); }, [order.guestId]);
+
+  const demoPreferences = useEffectEvent((guestId: string) =>
+    data.bills.filter(bill => !bill.voided && bill.order.guestId === guestId)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))[0]?.order ?? {});
+
+  useEffect(() => {
+    if (!prefillGuestId) return;
+    let active = true;
+    if (connected) {
+      workspaceRequest('customer-prefill/' + encodeURIComponent(prefillGuestId))
+        .then(({ preferences }) => { if (active) applyPreferences(prefillGuestId, preferences); })
+        .catch(() => { /* Visit details can still be entered by hand. */ });
+    } else {
+      applyPreferences(prefillGuestId, demoPreferences(prefillGuestId));
+    }
+    return () => { active = false; };
+  }, [connected, prefillGuestId]);
 
   function validate(action: ProgressAction | 'checkout', arrive: boolean) {
     if (!Number.isFinite(advanceAmount)) return 'Enter a valid advance amount with up to two decimal places.';
@@ -115,12 +176,15 @@ export function OrderEditor({
     if (!itemCount && action !== 'draft' && !(upcoming && action === 'taken' && !arrive)) return 'Add at least one dish.';
   }
 
-  function submit(action: ProgressAction | 'checkout', arrive = false) {
+  async function submit(action: ProgressAction | 'checkout', arrive = false) {
+    if (saveLock.current) return;
     const problem = validate(action, arrive);
     if (problem) {
       setError(problem);
       return;
     }
+    saveLock.current = true; setSaving(true);
+    try {
     const now = new Date();
     const at = now.toISOString();
     const visit: Visit = { ...preview, updatedAt: at };
@@ -151,12 +215,14 @@ export function OrderEditor({
         break;
     }
     if (action === 'checkout') {
-      setError(checkout(visit) ?? '');
+      setError(await checkout(visit) ?? '');
       return;
     }
     // Saving a future reservation must not run the parent's "taken" transition.
     const persist = visit.status === 'Upcoming' || !onProgress ? save : onProgress;
-    setError(persist(visit, action) ?? '');
+    setError(await persist(visit, action) ?? '');
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not save order.'); }
+    finally { saveLock.current = false; setSaving(false); }
   }
 
   function changeQuantity(line: Line, delta: number) {
@@ -263,16 +329,11 @@ export function OrderEditor({
       </section> : <section className="panel ow-visit" aria-label="Guest and visit details">
         <div className="section-head"><h2>Guest details</h2><button className="btn secondary" onClick={addGuest}><Plus size={16} /> Add customer</button></div>
         <div className="ow-fields">
-          <Field label="Find customer"><input value={guestQuery} onChange={event => setGuestQuery(event.target.value)} placeholder="Name or phone" /></Field>
-          <Field label="Customer"><select value={order.guestId} onChange={event => {
-            const guest = data.guests.find(item => item.id === event.target.value);
-            patch({ guestId: guest?.id ?? '', guest: guest?.name ?? '', guestPhone: guest?.phone ?? '', guestDetails: 'Pending' });
-          }}>
-            <option value="">Enter guest details</option>
-            {!registeredGuest && order.guestId && <option value={order.guestId}>{order.guest || 'Current guest'}</option>}
-            {guests.map(guest => <option value={guest.id} key={guest.id}>{guest.name}</option>)}
-          </select></Field>
-          <Field label="Guest name"><input value={order.guest} onChange={event => patch({
+          <CustomerSearch guests={data.guests} connected={connected} selected={{ id: order.guestId, name: order.guest }} onSelect={guest => {
+            if (guest) rememberCustomer?.(guest);
+            changeGuest({ guestId: guest?.id ?? '', guest: guest?.name ?? '', guestPhone: guest?.phone ?? '', guestDetails: 'Pending' });
+          }} />
+          <Field label="Guest name"><input value={order.guest} onChange={event => changeGuest({
             guest: event.target.value, guestId: '', guestPhone, guestDetails: 'Pending',
           })} /></Field>
           <Field label="Guest phone"><input type="tel" value={guestPhone} onChange={event => patch({
@@ -303,7 +364,10 @@ export function OrderEditor({
           {([['host', 'Host'], ['referral', 'Referred by'], ['pet', 'Pet name'], ['breed', 'Pet breed'],
             ['hometown', 'From / hometown'], ['stay', 'Place of stay in Yercaud'], ['nativity', 'Place of origin (optional, for the paper bill)'],
           ] as const).map(([key, label]) => <Field key={key} label={label}><input value={order[key] ?? ''}
-            onChange={event => patch({ [key]: event.target.value })} /></Field>)}
+            onChange={event => {
+              if (key === 'hometown' || key === 'pet' || key === 'breed') delete autoFilled.current[key];
+              patch({ [key]: event.target.value });
+            }} /></Field>)}
           <Field label="Guest type"><select value={order.guestType ?? ''} onChange={event => patch({ guestType: event.target.value })}>
             <option value="">Unspecified</option><option>Room guest</option><option>Walk-in</option><option>Phone pre-order</option>
           </select></Field>
@@ -365,7 +429,7 @@ export function OrderEditor({
         <Totals order={preview} taxRate={data.business.taxRate} paid={paid || undefined} />
         {due < 0 && <p className="error">Recorded amount exceeds total by {rupees(-due, true)}.</p>}
         {error && <p className="error ow-error" role="alert">{error}</p>}
-        <div className="ow-actions">
+        <div className="ow-actions" inert={saving} aria-busy={saving}>
           <button className="btn secondary" onClick={() => submit('draft')}>{order.status === 'Draft' || !order.id ? 'Save draft' : 'Save changes'}</button>
           {upcoming ? <button className="btn secondary" onClick={() => submit('taken')}>Save pre-order</button> :
             (order.status === 'Draft' || !order.id) && <button className="btn secondary" onClick={() => submit('taken')}>Mark order taken</button>}
@@ -380,9 +444,10 @@ export function OrderEditor({
             {onProgress && !order.readyForBilling && !atBillingDesk ? 'Send to billing desk' : 'Checkout'} <ArrowRight size={16} />
           </button>
         </div>
-        {order.status === 'Open' && order.id && !order.guestLeftAt && <details className="ow-departure-exception">
-          <summary>Guest left without paying</summary>
-          <button className="text-button" onClick={() => setConfirmLeft(true)}>{parcel ? 'Parcel collected before bill issued' : 'Guest left before bill issued'}</button>
+        {order.status === 'Open' && order.id && !order.guestLeftAt && due > 0 && <details className="ow-departure-exception">
+          <summary>Unpaid departure</summary>
+          <p className="hint">Use when a customer leaves with money still due. The amount stays outstanding for follow-up.</p>
+          <button className="text-button" onClick={() => setConfirmLeft(true)}>{parcel ? 'Record unpaid collection' : 'Record unpaid departure'}</button>
         </details>}
       </section>
     </div>
@@ -396,7 +461,7 @@ export function OrderEditor({
       </button>
     </div>}
     {dishEditor && <DishEditor line={dishEditor === 'special' ? undefined : dishEditor} close={() => setDishEditor(undefined)} save={saveDish} />}
-    {confirmLeft && <Dialog title={parcel ? 'Mark parcel collected?' : 'Mark guest left?'} close={() => setConfirmLeft(false)}>
+    {confirmLeft && <Dialog title={parcel ? 'Record unpaid collection?' : 'Record unpaid departure?'} close={() => setConfirmLeft(false)}>
       <p className="ow-confirm">{due > 0 ? `This order still has ${rupees(due, true)} due. The balance stays on the order.` : 'The order and payment history stay available.'}</p>
       <div className="dialog-actions">
         <button className="btn secondary" onClick={() => setConfirmLeft(false)}>Go back</button>
@@ -406,7 +471,7 @@ export function OrderEditor({
   </div>;
 }
 
-function DishEditor({ line, close, save, priceOnly = false }: { line?: Line; close: () => void; save: (line: Line) => string | void; priceOnly?: boolean }) {
+function DishEditor({ line, close, save, priceOnly = false }: { line?: Line; close: () => void; save: (line: Line) => SaveResult; priceOnly?: boolean }) {
   const [name, setName] = useState(line?.name ?? '');
   const [price, setPrice] = useState(line ? (line.price / 100).toFixed(2) : '');
   const [note, setNote] = useState(line?.note ?? '');
@@ -416,14 +481,14 @@ function DishEditor({ line, close, save, priceOnly = false }: { line?: Line; clo
   const changed = !!line && parsedPrice !== line.price;
   const needsReason = !line || changed;
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!name.trim() || !Number.isFinite(parsedPrice) || parsedPrice < 0 || (!line && parsedPrice === 0)) {
       setError('Enter a dish name and a valid price with up to two decimal places. A new dish must cost more than zero.');
       return;
     }
     if (needsReason && !reason.trim()) { setError('Enter a reason.'); return; }
-    const failure = save({
+    const failure = await save({
       id: line?.id ?? 'special-' + crypto.randomUUID(), name: name.trim(), price: parsedPrice,
       quantity: line?.quantity ?? 1, servedQuantity: line?.servedQuantity,
       note: note.trim() || undefined, priceReason: needsReason ? reason.trim() : line?.priceReason,
@@ -450,15 +515,15 @@ const methodIcons = { Cash: Banknote, UPI: Smartphone, Card: CreditCard };
 
 function DiscountEditor({ discount, role, limit, stale, close, save }: {
   discount?: Discount; role: Role; limit: number; stale: boolean; close: () => void;
-  save: (input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve?: boolean) => string | void;
+  save: (input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve?: boolean) => SaveResult;
 }) {
   const [kind, setKind] = useState(discount?.kind ?? 'percent');
   const [entry, setEntry] = useState(discount ? String(discount.kind === 'amount' ? discount.value / 100 : discount.value) : '');
   const [reason, setReason] = useState(discount?.reason ?? '');
   const [error, setError] = useState('');
   const readOnly = Boolean(discount?.pending && !stale);
-  const submit = (input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve?: boolean) => {
-    setError(save(input, approve) ?? '');
+  const submit = async (input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve?: boolean) => {
+    setError(await save(input, approve) ?? '');
   };
   return <Dialog title="Bill discount" close={close}>
     <form className="ow-dish-editor" onSubmit={event => {
@@ -488,11 +553,11 @@ export function Checkout({ order, taxRate, role, staffDiscountLimit, close, comp
   role: Role;
   staffDiscountLimit: number;
   close: () => void;
-  complete: (payments: Payment[]) => string | void;
-  onPaymentsChange?: (payments: Payment[]) => void;
-  onTipChange: (amount: number) => void;
-  onDiscountChange: (input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve?: boolean) => string | void;
-  onLineChange: (line: Line) => string | void;
+  complete: (payments: Payment[]) => SaveResult;
+  onPaymentsChange?: (payments: Payment[]) => SaveResult;
+  onTipChange: (amount: number, payments?: Payment[]) => SaveResult;
+  onDiscountChange: (input?: Pick<Discount, 'kind' | 'value' | 'reason'>, approve?: boolean) => SaveResult;
+  onLineChange: (line: Line) => SaveResult;
 }) {
   const [method, setMethod] = useState<Method>('UPI');
   const [payments, setPayments] = useState<Payment[]>(order.payments ?? []);
@@ -504,49 +569,60 @@ export function Checkout({ order, taxRate, role, staffDiscountLimit, close, comp
   const [removeIndex, setRemoveIndex] = useState<number>();
   const [priceLine, setPriceLine] = useState<Line>();
   const [discountEditor, setDiscountEditor] = useState(false);
+  const [tipPayment, setTipPayment] = useState<{ amount: number; tip: number; method: Method }>();
   const issueLock = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const pending = useRef(false);
+  async function persist(action: () => SaveResult): Promise<boolean> {
+    if (pending.current) return false;
+    pending.current = true; setSaving(true);
+    try { const failure = await action(); if (failure) { setError(failure); return false; } setError(''); return true; }
+    catch (error) { setError(error instanceof Error ? error.message : 'Could not save. Try again.'); return false; }
+    finally { pending.current = false; setSaving(false); }
+  }
   const paid = sumPayments(payments);
-  const { subtotal, total: billTotal } = totals(order.items, taxRate, order.discount);
+  const { subtotal, total: billTotal } = totals(order.items, order.taxRate ?? taxRate, order.discount);
   const staleDiscount = Boolean(order.discount && order.discount.subtotal !== subtotal);
   const discountBlocked = Boolean(order.discount?.pending || staleDiscount);
   const remaining = billTotal + (order.tip ?? 0) - (order.advance?.amount ?? 0) - paid;
   const draftTip = tipEntry.trim() ? parseMoney(tipEntry) : 0;
   const tipChanged = draftTip !== (order.tip ?? 0);
+  const enteredAmount = amount.trim() ? parseMoney(amount) : 0;
+  const tipFromPayment = enteredAmount + paid + (order.advance?.amount ?? 0) - billTotal;
+  const canUseDifference = Number.isSafeInteger(enteredAmount) && enteredAmount > 0 && tipFromPayment > 0 &&
+    tipFromPayment !== (order.tip ?? 0) && !tipChanged && !discountBlocked;
   const parcel = order.kind === 'Parcel';
   const invalidOrder = !order.items.length || (!parcel && !order.table);
   const canIssue = remaining === 0 && !tipChanged && !discountBlocked && !invalidOrder && !issued && order.status !== 'Billed' && order.status !== 'Cancelled';
   const guests = order.covers + (order.extraCovers ?? 0);
   const description = [order.guest || 'Guest', parcel ? 'Parcel' : `${guests} ${guests === 1 ? 'guest' : 'guests'}`].join(' · ');
 
-  function changePayments(next: Payment[]) {
-    setPayments(next);
-    onPaymentsChange?.(next);
-    setError('');
+  async function changePayments(next: Payment[]) {
+    if (await persist(() => onPaymentsChange?.(next))) { setPayments(next); return true; }
+    return false;
   }
 
-  function record(event: FormEvent<HTMLFormElement>) {
+  async function record(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (discountBlocked || tipChanged) return;
     const paise = amount.trim() ? parseMoney(amount) : remaining;
     if (!(paise > 0 && paise <= remaining)) { setError('Enter a payment amount up to the remaining balance.'); return; }
-    changePayments([...payments, { amount: paise, method, date: serviceDay() }]);
-    setAmount('');
+    if (await changePayments([...payments, { amount: paise, method, date: serviceDay() }])) setAmount('');
   }
 
-  function issue() {
+  async function issue() {
     if (!canIssue || issueLock.current) return;
     issueLock.current = true;
-    const failure = complete(payments);
-    if (failure) {
+    const success = await persist(() => complete(payments));
+    if (!success) {
       issueLock.current = false;
-      setError(failure);
       return;
     }
     setIssued(true);
   }
 
   return <Dialog title="Checkout" description={description} close={close} large>
-    <div className="ow-checkout">
+    <div className="ow-checkout" inert={saving} aria-busy={saving}>
       <section className="ow-checkout-summary" aria-label="Bill review">
       <details className="ow-checkout-review" open>
         <summary>Review dishes <span>{order.items.reduce((count, line) => count + line.quantity, 0)} items</span></summary>
@@ -559,13 +635,13 @@ export function Checkout({ order, taxRate, role, staffDiscountLimit, close, comp
       <Totals order={order} taxRate={taxRate} paid={paid} />
       </section>
       <section className="ow-checkout-payment" aria-label="Payment">
-      <form className="ow-tip-form" onSubmit={event => {
+      <form className="ow-tip-form" onSubmit={async event => {
         event.preventDefault();
         if (!Number.isFinite(draftTip)) { setTipError('Enter a valid tip with up to two decimal places.'); return; }
         if (billTotal + draftTip < paid + (order.advance?.amount ?? 0)) {
           setTipError('Correct the recorded payments before reducing the tip.'); return;
         }
-        onTipChange(draftTip); setTipError(''); setError(''); setAmount('');
+        if (await persist(() => onTipChange(draftTip))) { setTipError(''); setAmount(''); }
       }}>
         <Field label="Voluntary tip (₹)"><input inputMode="decimal" placeholder="0.00" value={tipEntry} onChange={event => { setTipEntry(event.target.value); setTipError(''); }} /></Field>
         <button className="btn secondary" disabled={!tipChanged}>Apply tip</button>
@@ -594,6 +670,14 @@ export function Checkout({ order, taxRate, role, staffDiscountLimit, close, comp
           <button type="button" className="btn secondary" onClick={() => setAmount((remaining / 100).toFixed(2))}>Use remaining balance</button>
           <button className="btn primary" disabled={tipChanged || discountBlocked}>{amount.trim() ? 'Record payment' : 'Record full balance'}</button>
         </div>
+        {canUseDifference && <div className="ow-change-tip">
+          <div><strong>{rupees(enteredAmount, true)} received</strong><p>{order.tip ? 'Set the total tip to ' : 'Tip from the difference: '}{rupees(tipFromPayment, true)}{order.tip ? ' (currently ' + rupees(order.tip, true) + ')' : ''}.</p></div>
+          <button type="button" className="btn secondary" onClick={() => setTipPayment({ amount: enteredAmount, tip: tipFromPayment, method })}>
+            <HandCoins size={17} aria-hidden="true" /> Use difference as tip
+          </button>
+          <small>Confirm with the customer before adding a tip.</small>
+        </div>}
+        {enteredAmount > remaining && !tipChanged && <p className="hint">Extra received: {rupees(enteredAmount - remaining, true)}. Return it to the customer, or use the difference as a tip with their agreement.</p>}
       </form>}
       {remaining < 0 && <p className="error" role="alert">Recorded amount exceeds the bill by {rupees(-remaining, true)}. Correct the payments or advance before issuing.</p>}
       {invalidOrder && <p className="error" role="alert">Add dishes and select a dining table for dine-in before issuing the bill.</p>}
@@ -604,14 +688,25 @@ export function Checkout({ order, taxRate, role, staffDiscountLimit, close, comp
         <button className="btn primary" disabled={!canIssue} onClick={issue}>{issued ? 'Bill issued' : 'Issue bill'} <ArrowRight size={16} /></button>
       </div>
     </div>
-    {priceLine && <DishEditor line={priceLine} priceOnly close={() => setPriceLine(undefined)} save={line => {
-      const problem = onLineChange(line);
+    {tipPayment && <Dialog title="Confirm tip and payment" close={() => setTipPayment(undefined)}>
+      <p>Record {rupees(tipPayment.amount, true)} by {tipPayment.method} and set the total voluntary tip to {rupees(tipPayment.tip, true)}?</p>
+      {!!order.tip && <p className="hint">This replaces the existing {rupees(order.tip, true)} tip.</p>}
+      <div className="dialog-actions"><button className="btn secondary" onClick={() => setTipPayment(undefined)}>Go back</button>
+        <button className="btn primary" disabled={saving} onClick={async () => {
+          const next = [...payments, { amount: tipPayment.amount, method: tipPayment.method, date: serviceDay() }];
+          if (!await persist(() => onTipChange(tipPayment.tip, next))) return;
+          setPayments(next); setTipEntry((tipPayment.tip / 100).toFixed(2));
+          setAmount(''); setError(''); setTipError(''); setTipPayment(undefined);
+        }}>Confirm tip and record payment</button></div>
+    </Dialog>}
+    {priceLine && <DishEditor line={priceLine} priceOnly close={() => setPriceLine(undefined)} save={async line => {
+      const problem = await onLineChange(line);
       if (problem) return problem;
       setPriceLine(undefined); setAmount(''); setError('');
     }} />}
     {discountEditor && <DiscountEditor discount={order.discount} role={role} limit={staffDiscountLimit} stale={staleDiscount}
-      close={() => setDiscountEditor(false)} save={(input, approve) => {
-        const problem = onDiscountChange(input, approve);
+      close={() => setDiscountEditor(false)} save={async (input, approve) => {
+        const problem = await onDiscountChange(input, approve);
         if (problem) return problem;
         setDiscountEditor(false); setAmount(''); setError('');
       }} />}
@@ -619,9 +714,8 @@ export function Checkout({ order, taxRate, role, staffDiscountLimit, close, comp
       <p className="ow-confirm">The amount will be added back to the balance due.</p>
       <div className="dialog-actions">
         <button className="btn secondary" onClick={() => setRemoveIndex(undefined)}>Keep payment</button>
-        <button className="btn danger" onClick={() => {
-          changePayments(payments.filter((_, index) => index !== removeIndex));
-          setRemoveIndex(undefined);
+        <button className="btn danger" disabled={saving} onClick={async () => {
+          if (await changePayments(payments.filter((_, index) => index !== removeIndex))) setRemoveIndex(undefined);
         }}>Remove payment</button>
       </div>
     </Dialog>}

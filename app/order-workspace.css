@@ -132,6 +132,9 @@
 .ow-checkout-payment .payment-row span { overflow-wrap: anywhere; }
 .ow-payment-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ow-payment-actions .primary { flex-grow: 1; }
+.ow-change-tip { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+.ow-change-tip p { margin-top: 4px; }
+.ow-change-tip .btn { width: 100%; min-height: 44px; white-space: normal; }
 .ow-paid { display: flex; align-items: center; gap: 6px; color: #216244; font-weight: 700; }
 .ow-checkout-actions {
   position: sticky;

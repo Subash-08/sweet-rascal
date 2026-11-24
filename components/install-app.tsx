@@ -9,7 +9,7 @@ type InstallPrompt = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 };
 
-export function InstallApp() {
+export function useAppInstallation() {
   const [prompt, setPrompt] = useState<InstallPrompt>();
   const [installed, setInstalled] = useState(false);
   const [instructions, setInstructions] = useState(false);
@@ -32,19 +32,25 @@ export function InstallApp() {
     };
   }, []);
 
+  async function install() {
+    if (!prompt) { setInstructions(true); return; }
+    setPrompt(undefined);
+    try {
+      await prompt.prompt();
+      if ((await prompt.userChoice).outcome === 'accepted') setInstalled(true);
+    } catch { setInstructions(true); }
+  }
+
+  return { installed, instructions, apple, install, dismiss: () => setInstructions(false) };
+}
+
+export function InstallApp({ installed, instructions, apple, install, dismiss }: ReturnType<typeof useAppInstallation>) {
   if (installed) return null;
   return <>
-    <button className="help-link" onClick={async () => {
-      if (!prompt) { setInstructions(true); return; }
-      setPrompt(undefined);
-      try {
-        await prompt.prompt();
-        if ((await prompt.userChoice).outcome === 'accepted') setInstalled(true);
-      } catch { setInstructions(true); }
-    }}><Download size={17} aria-hidden="true" /> Install app</button>
-    {instructions && <Dialog title="Install Sweet Rascal" close={() => setInstructions(false)}>
+    <button className="btn secondary" onClick={install}><Download size={17} aria-hidden="true" /> Install app</button>
+    {instructions && <Dialog title="Install Sweet Rascal" close={dismiss}>
       <p>{apple ? <>Open this page in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>.</> : <>Open your browser menu and look for <b>Install app</b> or <b>Add to Home screen</b>. If the option is unavailable, open this page in a browser that supports installation.</>}</p>
-      <div className="dialog-actions"><button className="btn primary" onClick={() => setInstructions(false)}>Done</button></div>
+      <div className="dialog-actions"><button className="btn primary" onClick={dismiss}>Done</button></div>
     </Dialog>}
   </>;
 }

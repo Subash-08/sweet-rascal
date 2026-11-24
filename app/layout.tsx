@@ -19,7 +19,7 @@ const playfair = localFont({
 export const metadata: Metadata = {
   title: 'Sweet Rascal | Restaurant Billing',
   description: 'Dining orders, guests and billing for Sweet Rascal, Yercaud.',
-  icons: { icon: '/icons/app-192.png', apple: '/icons/apple-180.png' },
+  icons: { icon: { url: '/icons/heart-mark.svg', type: 'image/svg+xml' }, apple: '/icons/heart-apple-180.png' },
   appleWebApp: { capable: true, title: 'Sweet Rascal', statusBarStyle: 'default' },
 };
 

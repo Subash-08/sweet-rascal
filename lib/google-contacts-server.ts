@@ -1,6 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { connectDatabase, databaseConfigured } from './server/database';
+import { IntegrationModel, LockModel } from './server/models';
 
 export const contactScope = 'https://www.googleapis.com/auth/contacts';
 export const cookieName = 'sr_contact_access';
@@ -16,8 +18,8 @@ export function config() {
   const origin = process.env.CONTACTS_ORIGIN?.trim();
   const { GOOGLE_CONTACTS_CLIENT_ID: clientId, GOOGLE_CONTACTS_CLIENT_SECRET: clientSecret, GOOGLE_CONTACTS_ACCOUNT: account,
     CONTACTS_OWNER_CODE: owner, CONTACTS_STAFF_CODE: staff, CONTACTS_STORAGE_KEY: rawKey } = process.env;
-  if (!origin || !clientId || !clientSecret || !account || !owner || !staff || owner === staff ||
-      !/^[a-f\d]{32,}$/i.test(owner) || !/^[a-f\d]{32,}$/i.test(staff) || !/^[a-f\d]{64}$/i.test(rawKey ?? '')) return null;
+  if (!origin || !clientId || !clientSecret || !account || !/^[a-f\d]{64}$/i.test(rawKey ?? '')) return null;
+  if (!databaseConfigured() && (!owner || !staff || owner === staff || !/^[a-f\d]{32,}$/i.test(owner) || !/^[a-f\d]{32,}$/i.test(staff))) return null;
   try {
     const url = new URL(origin);
     if ((url.origin !== origin && url.origin + '/' !== origin) ||
@@ -26,9 +28,10 @@ export function config() {
     const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
     const redis = redisUrl && redisToken && new URL(redisUrl).protocol === 'https:'
       ? { url: redisUrl, token: redisToken, key: 'sweet-rascal:contacts:' + pkceChallenge(url.origin) } : undefined;
-    return { origin: url.origin, clientId, clientSecret, account: account.trim().toLowerCase(), owner, staff,
+    return { origin: url.origin, clientId, clientSecret, account: account.trim().toLowerCase(), owner: owner || '', staff: staff || '',
       key: Buffer.from(rawKey!, 'hex'), secure: url.protocol === 'https:',
-      redis, storageReady: Boolean(redis) || !(process.env.VERCEL === '1' || redisUrl || redisToken),
+      redis, mongo: databaseConfigured(), integrationKey: 'google-contacts:' + pkceChallenge(url.origin),
+      storageReady: databaseConfigured() || Boolean(redis) || !(process.env.VERCEL === '1' || redisUrl || redisToken),
       tokenFile: resolve(/* turbopackIgnore: true */ process.env.CONTACTS_TOKEN_FILE || '.sweet-rascal/google-contacts.enc') };
   } catch { return null; }
 }
@@ -66,7 +69,10 @@ async function redisCommand<T>(redis: NonNullable<Config['redis']>, command: (st
   throw new ContactError(503, 'Google Contacts storage is unavailable. Try again.');
 }
 export async function connection(c: Config) {
-  const stored = c.redis
+  if (c.mongo) await connectDatabase();
+  const stored = c.mongo
+    ? (await IntegrationModel.findById(c.integrationKey).lean())?.encrypted
+    : c.redis
     ? await redisCommand<string | null>(c.redis, ['GET', c.redis.key])
     : await readFile(c.tokenFile, 'utf8').catch(() => null);
   if (!stored) return null;
@@ -83,6 +89,11 @@ export async function saveConnection(c: Config, refresh: string) {
   const cipher = createCipheriv('aes-256-gcm', c.key, iv);
   const value = Buffer.concat([cipher.update(JSON.stringify({ account: c.account, clientId: c.clientId, refresh })), cipher.final()]);
   const encrypted = [iv, cipher.getAuthTag(), value].map(part => part.toString('base64url')).join('.');
+  if (c.mongo) {
+    await connectDatabase();
+    await IntegrationModel.updateOne({ _id: c.integrationKey }, { $set: { encrypted } }, { upsert: true, runValidators: true });
+    return;
+  }
   if (c.redis) {
     if (await redisCommand(c.redis, ['SET', c.redis.key, encrypted]) !== 'OK') {
       throw new ContactError(503, 'Could not save the Google Contacts connection.');
@@ -145,6 +156,22 @@ export function serial<T>(action: () => Promise<T>) {
   return result;
 }
 export async function singleContactWrite<T>(c: Config, action: () => Promise<T>) {
+  if (c.mongo) {
+    await connectDatabase();
+    const owner = randomValue();
+    const now = new Date();
+    try {
+      await LockModel.findOneAndUpdate({ _id: c.integrationKey, expiresAt: { $lte: now } },
+        { $set: { owner, expiresAt: new Date(Date.now() + 90_000) } }, { upsert: true });
+    } catch (error) {
+      if (typeof error === 'object' && error && 'code' in error && error.code === 11000) {
+        throw new ContactError(409, 'Another contact is syncing. Retry in a moment.');
+      }
+      throw error;
+    }
+    try { return await action(); }
+    finally { await LockModel.deleteOne({ _id: c.integrationKey, owner }).catch(() => {}); }
+  }
   if (!c.redis) return serial(action);
   const key = c.redis.key + ':lock';
   const owner = randomValue();

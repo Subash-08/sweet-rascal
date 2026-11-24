@@ -3,6 +3,9 @@ import {
   callbackPath, config, connection, ContactError, contactInput, contactScope, cookieName, identity, matchSecret,
   pkceChallenge, randomValue, saveConnection, sign, singleContactWrite, stateCookie, syncContact, token, verify, type ContactRole,
 } from '../../../../lib/google-contacts-server';
+import { currentUser } from '../../../../lib/server/auth';
+import { BusinessModel, CustomerModel } from '../../../../lib/server/models';
+import { databaseConfigured } from '../../../../lib/server/database';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -14,14 +17,18 @@ const sessionSeconds = 60 * 60 * 12;
 const response = (body: object, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 const cookie = (secure: boolean, maxAge: number) => ({ httpOnly: true, secure, maxAge, sameSite: 'lax' as const, path: '/api/google-contacts' });
 
-function session(request: NextRequest, settings: NonNullable<ReturnType<typeof config>>) {
+async function session(request: NextRequest, settings: NonNullable<ReturnType<typeof config>>) {
+  if (databaseConfigured()) {
+    const user = await currentUser();
+    return user?.role === 'Owner' ? 'owner' : user?.role === 'Staff' ? 'staff' : undefined;
+  }
   const auth = verify<Session>(settings, request.cookies.get(cookieName)?.value);
   if (!auth || (auth.role !== 'owner' && auth.role !== 'staff')) return;
   const code = settings[auth.role];
   if (matchSecret(auth.fingerprint, pkceChallenge(code))) return auth.role;
 }
 function redirect(settings: NonNullable<ReturnType<typeof config>>, result: string) {
-  return NextResponse.redirect(new URL('/?contactConnection=' + result + '#settings', settings.origin));
+  return NextResponse.redirect(new URL('/settings?contactConnection=' + result, settings.origin));
 }
 
 export async function GET(request: NextRequest, context: Context) {
@@ -29,10 +36,11 @@ export async function GET(request: NextRequest, context: Context) {
   const action = ((await context.params).action ?? []).join('/');
   if (!settings) return action === '' ? response({ configured: false }) : response({ message: 'Contact sync is not configured.' }, 503);
   if (!settings.storageReady) return action === '' ? response({ configured: false, reason: 'storage' }) : response({ message: 'Google Contacts needs persistent storage.' }, 503);
-  const role = session(request, settings);
+  let role: ContactRole | undefined;
+  try { role = await session(request, settings); } catch { return response({ configured: false, reason: 'storage-unavailable' }, 503); }
   if (!action) {
     try {
-      return response({ configured: true, access: role ?? null, connected: role ? Boolean(await connection(settings)) : false,
+      return response({ configured: true, access: role ?? null, appAuth: databaseConfigured(), connected: role ? Boolean(await connection(settings)) : false,
         account: role === 'owner' ? settings.account : undefined });
     } catch { return response({ configured: false, reason: 'storage-unavailable' }, 503); }
   }
@@ -64,8 +72,8 @@ export async function POST(request: NextRequest, context: Context) {
   if (!settings.storageReady) return response({ message: 'Google Contacts needs persistent storage.' }, 503);
   if (request.headers.get('origin') !== settings.origin) return response({ message: 'Invalid request origin.' }, 403);
   const action = ((await context.params).action ?? []).join('/');
-  const role = session(request, settings);
   try {
+    const role = await session(request, settings);
     if (action === 'lock') {
       const next = response({ ok: true });
       next.cookies.set(cookieName, '', cookie(settings.secure, 0));
@@ -73,6 +81,7 @@ export async function POST(request: NextRequest, context: Context) {
       return next;
     }
     if (action === 'unlock') {
+      if (databaseConfigured()) return response({ message: 'Sign in with your Sweet Rascal account.' }, 401);
       const input = await request.json().catch(() => null);
       if (typeof input?.code !== 'string' || input.code.length > 256) return response({ message: 'Enter a valid contact sync access code.' }, 400);
       const grant = matchSecret(input.code, settings.owner) ? 'owner' : matchSecret(input.code, settings.staff) ? 'staff' : undefined;
@@ -96,6 +105,29 @@ export async function POST(request: NextRequest, context: Context) {
     if (action === 'sync') {
       const raw = await request.text();
       if (raw.length > 4096) return response({ message: 'Contact data is too long.' }, 400);
+      if (databaseConfigured()) {
+        const { id } = JSON.parse(raw);
+        if (typeof id !== 'string') return response({ message: 'Choose a saved customer.' }, 400);
+        const customer = await CustomerModel.findById(id).lean();
+        if (!customer) return response({ message: 'Save this customer before syncing.' }, 404);
+        const business = await BusinessModel.findById('restaurant').lean();
+        if (!business?.contactSync) return response({ message: 'Automatic contact sync is off in Settings.' }, 409);
+        const contacts = [
+          ...(customer.phone ? [{ id: customer._id, name: customer.name, phone: customer.phone, note: customer.contactNote || '' }] : []),
+          ...customer.companions.flatMap(person => person.saveToGoogle ? [{ id: person.id, name: person.name, phone: person.phone, note: '' }] : []),
+        ];
+        if (!contacts.length) return response({ message: 'Add a phone number to sync.' }, 400);
+        try {
+          await singleContactWrite(settings, async () => { for (const contact of contacts) await syncContact(settings, contactInput(contact)); });
+          const confirmedAt = new Date().toISOString();
+          const updated = await CustomerModel.updateOne({ _id: id, revision: customer.revision }, { $set: { sync: 'Synced', syncConfirmedAt: confirmedAt }, $unset: { syncIssue: 1 } });
+          if (!updated.matchedCount) return response({ message: 'Customer changed during sync. Save or retry the latest details.' }, 409);
+          return response({ synced: true, syncConfirmedAt: confirmedAt });
+        } catch (error) {
+          await CustomerModel.updateOne({ _id: id, revision: customer.revision }, { $set: { sync: 'Sync pending', syncIssue: error instanceof ContactError ? error.message : 'Contact sync failed. Retry.' }, $unset: { syncConfirmedAt: 1 } });
+          throw error;
+        }
+      }
       const input = contactInput(JSON.parse(raw));
       await singleContactWrite(settings, () => syncContact(settings, input));
       return response({ synced: true });

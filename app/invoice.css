@@ -419,8 +419,12 @@
 
 @page sr-invoice-a4 {
   size: A4 portrait;
-  margin: 10mm 11mm;
+  margin: 10mm 11mm 17mm;
+  @bottom-left { content: 'Sweet Rascal'; font-family: sans-serif; font-size: 8pt; color: #444; }
+  @bottom-right { content: 'Page ' counter(page) ' of ' counter(pages); font-family: sans-serif; font-size: 8pt; color: #444; }
 }
+.sr-whatsapp-actions { display: inline-flex; align-items: center; gap: 4px; }
+.sr-invoice-share-hint { margin-bottom: 12px; overflow-wrap: anywhere; }
 
 @media print {
   .sr-invoice-preview .sr-invoice-controls,

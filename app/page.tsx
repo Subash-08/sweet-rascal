@@ -1,5 +1,5 @@
-import Restaurant from '../components/restaurant';
+import { redirect } from 'next/navigation';
 
 export default function Home() {
-  return <Restaurant />;
+  redirect('/overview');
 }

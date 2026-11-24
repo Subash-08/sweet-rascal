@@ -1,4 +1,4 @@
-const fallbackCache = 'sweet-rascal-offline-v1';
+const fallbackCache = 'sweet-rascal-offline-v2';
 const offlinePage = '/offline.html';
 
 self.addEventListener('install', event => {

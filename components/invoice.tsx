@@ -1,9 +1,10 @@
 'use client';
 
-import { useId, useState, type ReactNode } from 'react';
-import { ArrowLeft, Coffee, ExternalLink, MessageCircle, Printer } from 'lucide-react';
-import { type Bill, rupees, sessions, shortDate, sumPayments, totals } from '../lib/demo';
+import { useId, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, Coffee, Download, ExternalLink, MessageCircle, Pencil, Printer } from 'lucide-react';
+import { type Bill, type Refund, refundTotal, rupees, sessions, shortDate, sumPayments, totals } from '../lib/demo';
 import { Dialog, Title } from './ui';
+import { HeartMark } from './heart-mark';
 import '../app/invoice.css';
 
 export type InvoiceShareEvent = {
@@ -14,9 +15,11 @@ export type InvoiceShareEvent = {
 };
 
 export type BillPreviewProps = {
+  refunds?: Refund[];
   bill: Bill;
   table: string;
   close: () => void;
+  backLabel?: string;
   canVoid: boolean;
   onVoid: () => void;
   onShare?: (event: InvoiceShareEvent) => void;
@@ -34,10 +37,7 @@ function formatDate(date: string) {
 function Mark({ name }: { name: string }) {
   return (
     <div className="sr-invoice-mark">
-      <svg viewBox="0 0 92 54" width="76" height="45" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinejoin="round">
-        <path d="M35 47C28 42 5 28 5 17 5 5 22 1 29 12 36 1 53 5 53 17c0 11-18 24-24 28" />
-        <path d="M62 49c-6-4-25-17-25-28 0-12 16-16 25-5 8-11 25-7 25 5 0 11-19 24-25 28Z" />
-      </svg>
+      <HeartMark width={76} />
       <strong>“{name}”</strong>
     </div>
   );
@@ -193,7 +193,7 @@ function whatsappNumber(value: string) {
   return /^91[6-9]\d{9}$/.test(digits) ? digits : '';
 }
 
-function ShareInvoice({ bill, close, onShare }: Pick<BillPreviewProps, 'bill' | 'close' | 'onShare'>) {
+function ShareInvoice({ bill, close, onShare, download, downloading }: Pick<BillPreviewProps, 'bill' | 'close' | 'onShare'> & { download: () => void; downloading: boolean }) {
   const [phone, setPhone] = useState(bill.order.guestPhone ?? '');
   const [opened, setOpened] = useState(false);
   const fieldId = useId();
@@ -204,10 +204,10 @@ function ShareInvoice({ bill, close, onShare }: Pick<BillPreviewProps, 'bill' | 
   return (
     <Dialog title="Share bill on WhatsApp" close={close}>
       <ol className="sr-invoice-share-steps">
-        <li>Open the print dialog and choose <strong>Save as PDF</strong> or your device’s PDF export option.</li>
+        <li>Download the bill PDF below.</li>
         <li>Open WhatsApp below. Attach the saved PDF to the prefilled message and send it.</li>
       </ol>
-      <button type="button" className="btn secondary sr-invoice-print-pdf" onClick={() => window.print()}><Printer size={16} /> Print A4 / save PDF</button>
+      <button type="button" className="btn secondary sr-invoice-print-pdf" disabled={downloading} onClick={download}><Download size={16} /> {downloading ? 'Preparing PDF…' : 'Download PDF'}</button>
       <p className="sr-invoice-share-note">Review the PDF before sharing. It includes the guest information and legacy fields shown in the preview.</p>
       <div className="field">
         <label htmlFor={fieldId}>Customer WhatsApp number</label>
@@ -230,30 +230,58 @@ function ShareInvoice({ bill, close, onShare }: Pick<BillPreviewProps, 'bill' | 
   );
 }
 
-export function BillPreview({ bill, table, close, canVoid, onVoid, onShare, onDeparture }: BillPreviewProps) {
+export function BillPreview({ bill, table, close, backLabel = 'Bills', canVoid, onVoid, onShare, onDeparture, refunds = [] }: BillPreviewProps) {
   const [mono, setMono] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+  const preview = useRef<HTMLDivElement>(null);
+  const downloadLock = useRef(false);
+  const number = whatsappNumber(bill.order.guestPhone ?? '');
+  const message = `Hello, here is your bill ${bill.id} from ${bill.business.name}. Thank you for your order!`;
+  async function download() {
+    if (downloadLock.current) return;
+    const sheet = preview.current?.querySelector<HTMLElement>('.sr-invoice-sheet');
+    if (!sheet) return;
+    downloadLock.current = true;
+    setDownloading(true);
+    setDownloadError('');
+    try {
+      const { downloadInvoicePdf } = await import('../lib/invoice-pdf');
+      await downloadInvoicePdf(sheet, bill.id);
+    } catch (error) { setDownloadError(error instanceof Error ? error.message : 'PDF could not be prepared. Try Print A4.'); }
+    finally { downloadLock.current = false; setDownloading(false); }
+  }
 
   return (
-    <div className="sr-invoice-preview">
+    <div className="sr-invoice-preview" ref={preview}>
       <div className="sr-invoice-controls">
         <Title title={`Bill ${bill.id}`} subtitle="Print or save as PDF in A4 portrait. Check that paper size is A4 in the print dialog." action={<>
-          <button className="btn secondary" type="button" onClick={close}><ArrowLeft size={16} /> Bills</button>
+          <button className="btn secondary" type="button" onClick={close}><ArrowLeft size={16} /> {backLabel}</button>
           <div className="sr-invoice-modes" role="group" aria-label="Print colour">
             <button className="btn" type="button" aria-pressed={!mono} onClick={() => setMono(false)}>Colour</button>
             <button className="btn" type="button" aria-pressed={mono} onClick={() => setMono(true)}>Black &amp; white</button>
           </div>
-          {!bill.voided && <button className="btn secondary" type="button" onClick={() => setShareOpen(true)}><MessageCircle size={16} /> WhatsApp</button>}
+          {!bill.voided && (number ? <div className="sr-whatsapp-actions">
+            <a className="btn secondary" href={`https://wa.me/${number}?text=${encodeURIComponent(message)}`} target="_blank" rel="noopener noreferrer"
+              onClick={() => onShare?.({ billId: bill.id, channel: 'WhatsApp', action: 'opened', at: new Date().toISOString() })}><MessageCircle size={16} /> WhatsApp</a>
+            <button className="icon-button" type="button" aria-label="Change WhatsApp number" onClick={() => setShareOpen(true)}><Pencil size={16} /></button>
+          </div> : <button className="btn secondary" type="button" onClick={() => setShareOpen(true)}><MessageCircle size={16} /> WhatsApp</button>)}
+          <button className="btn secondary" type="button" disabled={downloading} onClick={() => void download()}><Download size={16} /> {downloading ? 'Preparing PDF…' : 'Download PDF'}</button>
           <button className="btn primary" type="button" onClick={() => window.print()}><Printer size={16} /> Print A4</button>
         </>} />
       </div>
+      {downloadError && <p className="sr-invoice-controls error" role="alert">{downloadError}</p>}
+      {number && !bill.voided && <p className="sr-invoice-controls hint sr-invoice-share-hint">WhatsApp opens the chat for +{number}. Download the PDF and attach it in the chat.</p>}
       {onDeparture && <div className="sr-invoice-controls panel bill-departure">
         <div><strong>{bill.order.kind === 'Parcel' ? 'Confirm pickup when collected' : 'Free the table when guests leave'}</strong><p>{bill.order.kind === 'Parcel' ? 'You can do this later from the Billing Desk.' : 'The table stays occupied until you confirm departure.'}</p></div>
         <button type="button" className="btn secondary" onClick={onDeparture}>{bill.order.kind === 'Parcel' ? 'Mark collected' : 'Confirm departure'}</button>
       </div>}
       <InvoiceSheet bill={bill} table={table} mono={mono} />
-      {canVoid && !bill.voided && <div className="sr-invoice-controls sr-invoice-admin"><button className="btn secondary" type="button" onClick={onVoid}>Void sample bill</button></div>}
-      {shareOpen && !bill.voided && <ShareInvoice bill={bill} close={() => setShareOpen(false)} onShare={onShare} />}
+      {refunds.some(refund => refund.billId === bill.id) && <section className="panel sr-invoice-controls section-spacing"><h2>Refund history</h2>{refunds.filter(refund => refund.billId === bill.id).map(refund => <p key={refund.id}>{rupees(refund.amount, true)} · {refund.method} · {refund.reason}{refund.cancelled ? ' · Bill cancelled' : ''}</p>)}</section>}
+      {canVoid && !bill.voided && refundTotal(refunds, bill.id) < (bill.order.advance?.amount ?? 0) + sumPayments(bill.payments) &&
+        <div className="sr-invoice-controls sr-invoice-admin"><button className="btn secondary" type="button" onClick={onVoid}>Refund / cancel bill</button></div>}
+      {shareOpen && !bill.voided && <ShareInvoice bill={bill} close={() => setShareOpen(false)} onShare={onShare} download={() => void download()} downloading={downloading} />}
     </div>
   );
 }

@@ -1,10 +1,11 @@
 export const roles = ['Owner', 'Staff'] as const;
+export const returningVisitFields = ['hometown', 'pet', 'breed'] as const;
 export type Role = typeof roles[number];
 export const pages = ['Overview', 'Dining tables', 'Orders', 'Billing desk', 'Bills', 'Payments', 'Customers', 'Menu', 'Reports', 'Activity', 'Staff & access', 'Settings', 'My profile'] as const;
 export type Page = typeof pages[number];
 export const rolePages: Record<Role, readonly Page[]> = {
   Owner: pages,
-  Staff: ['Overview', 'Dining tables', 'Orders', 'Billing desk', 'Bills', 'Customers', 'My profile'],
+  Staff: ['Overview', 'Dining tables', 'Orders', 'Billing desk', 'Bills', 'Customers', 'Menu', 'Settings', 'My profile'],
 };
 export const roleNames: Record<Role, string> = { Owner: 'Vishoo Kaliapa', Staff: 'Meera Rao' };
 export const methods = ['Cash', 'UPI', 'Card'] as const;
@@ -16,10 +17,12 @@ export const serviceDay = () => new Intl.DateTimeFormat('en-CA', { timeZone, yea
 export type Payment = { amount: number; method: Method; date: string };
 export type Dish = { id: string; name: string; category: string; price: number; available: boolean; kind: 'Non-veg' | 'Egg' | 'Veg'; description: string };
 export type Line = { id: string; name: string; price: number; quantity: number; note?: string; priceReason?: string; servedQuantity?: number };
-export type Guest = { id: string; name: string; phone: string; notes: string; contactNote?: string; companions: {id?: string; name: string; phone: string; saveToGoogle?: boolean}[]; sync: 'Synced' | 'Sync pending' | 'No phone'; syncConfirmedAt?: string; syncIssue?: string; assigned: Role };
+export type Guest = { id: string; name: string; phone: string; notes: string; contactNote?: string; companions: {id?: string; name: string; phone: string; saveToGoogle?: boolean}[]; sync: 'Synced' | 'Sync pending' | 'No phone'; syncConfirmedAt?: string; syncIssue?: string; assigned: Role; revision?: number; shared?: boolean };
 export type Table = { id: string; name: string; seats: number; area: string };
 export type OrderEvent = { id: string; at: string; actor: string; action: string; detail?: string };
 export type Visit = {
+  revision?: number;
+  taxRate?: number;
   tip?: number;
   kind?: 'Dine-in' | 'Parcel'; guestPhone?: string; hometown?: string; stay?: string; nativity?: string;
   extraCovers?: number; guestType?: string; relationship?: string; rating?: string; blacklist?: boolean; pickupTime?: string;
@@ -27,11 +30,13 @@ export type Visit = {
   discount?: Discount; events?: OrderEvent[]; readyForBilling?: boolean; staffId?: string; guestDetails?: 'Pending' | 'Collected' | 'Skipped';
    id: string; source: 'Walk-in' | 'Phone pre-order' | 'Online'; guestId: string; guest: string; table: string; covers: number; session: string; date: string; time: string; host: string; referral: string; pet: string; breed: string; seatedAt: string; notes: string; assigned: Role; items: Line[]; advance?: Payment; status: 'Draft' | 'Open' | 'Upcoming' | 'Billed' | 'Cancelled' };
 export type Bill = { id: string; date: string; time: string; order: Visit; payments: Payment[]; voided?: boolean; business: Business; taxRate: number; tableName?: string };
-export type Business = { name: string; address: string; phone: string; gstin: string; footer: string; taxRate: number; contactSync: boolean; staffDiscountLimit?: number };
+export type Refund = { id: string; billId: string; amount: number; salesAmount: number; taxAmount: number; tipAmount: number; method: Method; reason: string; cancelled: boolean; at: string; actor: string };
+export type Business = { name: string; address: string; phone: string; gstin: string; footer: string; taxRate: number; contactSync: boolean; staffDiscountLimit?: number; revision?: number };
 export type Discount = { kind: 'percent' | 'amount'; value: number; reason: string; subtotal: number; approver?: string; pending: boolean };
 export const defaultStaffDiscountLimit = 10;
 export type Staff = { id: string; name: string; role: Role; active: boolean };
-export type Database = { guests: Guest[]; dishes: Dish[]; categories: string[]; tables: Table[]; orders: Visit[]; bills: Bill[]; business: Business; staff: Staff[] };
+export type Database = { guests: Guest[]; dishes: Dish[]; categories: string[]; tables: Table[]; orders: Visit[]; bills: Bill[]; business: Business; staff: Staff[]; refunds?: Refund[] };
+export const refundTotal = (refunds: Refund[], billId: string) => refunds.filter(refund => refund.billId === billId).reduce((sum, refund) => sum + refund.amount, 0);
 export const occupiesTable = (visit: Visit) => Boolean(visit.table) && visit.kind !== 'Parcel' && !visit.guestLeftAt &&
   (visit.status === 'Draft' || visit.status === 'Open' || visit.status === 'Billed' && Boolean(visit.takenAt));
 export const rupees = (paise: number, decimals = false) => new Intl.NumberFormat('en-IN', {
@@ -50,7 +55,7 @@ export function totals(items: Line[], taxRate: number, discount?: Discount) {
   return { subtotal, saving, net, tax, total: net + tax * 2 };
 }
 export function payable(order: Visit, taxRate: number) {
-  return totals(order.items, taxRate, order.discount).total + (order.tip ?? 0);
+  return totals(order.items, order.taxRate ?? taxRate, order.discount).total + (order.tip ?? 0);
 }
 export function parseMoney(value: string) {
   if (!/^\d{1,7}(\.\d{1,2})?$/.test(value.trim())) return NaN;

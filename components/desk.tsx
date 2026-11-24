@@ -7,9 +7,10 @@ import { guestLabel, tableName } from './overview';
 import { Badge, DataTable, Dialog, Title } from './ui';
 import { TicketCard } from './ticket-card';
 
-export function BillingDesk({ data, open, view, closeVisit, startParcel }: {
+export function BillingDesk({ data, open, view, closeVisit, startParcel, viewHistory }: {
   data: Database; open: (visit: Visit) => void; view: (bill: Bill) => void;
   closeVisit: (visit: Visit) => void; startParcel: () => void;
+  viewHistory?: () => void;
 }) {
   const [tab, setTab] = useState('Waiting for bill');
   const [departing, setDeparting] = useState<Visit>();
@@ -36,6 +37,7 @@ export function BillingDesk({ data, open, view, closeVisit, startParcel }: {
     <Title title="Billing desk" subtitle="Review orders, settle payments and share customer bills." action={<button className="btn primary" onClick={startParcel}><Package size={17} /> New parcel</button>} />
     <section className="desk-banner"><ReceiptText size={24} /><div><h2>{ready.length} waiting for bill</h2><p>Open a ticket to check the dishes, guest details and balance.</p></div></section>
     <div className="chips view-tabs desk-tabs">{[['Waiting for bill', ready.length], ['Open orders', live.length], ['Issued bills', issued.length]].map(([name, count]) => <button key={name} className={tab === name ? 'active' : ''} aria-pressed={tab === name} onClick={() => setTab(String(name))}>{name}<span aria-hidden="true">{count}</span></button>)}</div>
+    {tab === 'Issued bills' && viewHistory && <div className="section-head"><p className="hint">Recent bills and guests still at their tables.</p><button className="text-button" onClick={viewHistory}>Search bill history <ArrowRight size={16} aria-hidden="true" /></button></div>}
     <DataTable rows={rows} search={visit => [visit.id, guestLabel(visit), tableName(data, visit.table), visit.kind ?? 'Dine-in', settled(visit)?.id ?? ''].join(' ')}
       placeholder="Search order, guest or table…" empty={tab === 'Waiting for bill' ? 'No orders waiting for billing' : 'No orders in this view'}
       mobileCard={visit => {

@@ -1,0 +1,77 @@
+.workspace-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #fff;
+}
+
+.workspace-loader[data-visible='false'] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 180ms ease-out, visibility 0s linear 180ms;
+}
+
+.workspace-loader-logo {
+  display: block;
+  width: min(100%, 720px);
+  height: auto;
+}
+
+.workspace-loader-wordmark {
+  font-family: var(--font-playfair), Georgia, serif;
+  font-style: italic;
+  font-weight: 650;
+  font-size: 218px;
+}
+
+.workspace-loader-heart {
+  stroke-dasharray: 100 100;
+}
+
+.workspace-loader[data-heart-animation='sequential'] .workspace-loader-heart-left {
+  animation: workspace-trace-left 2.8s linear infinite;
+}
+
+.workspace-loader[data-heart-animation='sequential'] .workspace-loader-heart-right {
+  animation: workspace-trace-right 2.8s linear infinite;
+}
+
+.workspace-loader[data-heart-animation='simultaneous'] .workspace-loader-heart {
+  animation: workspace-trace-heart 1.6s linear infinite;
+}
+
+.workspace-loader[data-visible='false'] .workspace-loader-heart { animation-play-state: paused; }
+
+@keyframes workspace-trace-left {
+  0% { stroke-dashoffset: 100; opacity: 0; }
+  1% { opacity: 1; }
+  34%, 88% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+@keyframes workspace-trace-right {
+  0%, 34% { stroke-dashoffset: 100; opacity: 0; }
+  35% { opacity: 1; }
+  68%, 88% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+@keyframes workspace-trace-heart {
+  0% { stroke-dashoffset: 100; opacity: 0; }
+  1% { opacity: 1; }
+  62%, 88% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-loader[data-visible='false'] { transition: none; }
+  .workspace-loader[data-heart-animation] .workspace-loader-heart { animation: none; stroke-dasharray: none; }
+}
+
+@media print {
+  .workspace-loader { display: none; }
+}
